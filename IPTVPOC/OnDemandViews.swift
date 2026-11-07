@@ -223,7 +223,7 @@ final class ImageCache {
     private let cache = NSCache<NSURL, UIImage>()
     private var inFlight: [URL: Task<UIImage?, Never>] = [:]
 
-    init() { cache.countLimit = 600 }
+    init() { cache.countLimit = 1500 }
 
     func cached(_ url: URL) -> UIImage? { cache.object(forKey: url as NSURL) }
 
