@@ -19,6 +19,7 @@ final class PlayerController: ObservableObject {
     private var timeObserver: Any?
     private var streamOffset: Double = 0
     private var generation = 0
+    private var fallbackURL: URL?
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -55,6 +56,12 @@ final class PlayerController: ObservableObject {
             isBuffering = false
             message = nil
         case .failed:
+            if let fallback = fallbackURL {
+                fallbackURL = nil
+                load(fallback)
+                message = "Formato HLS non disponibile, provo il flusso originale…"
+                return
+            }
             isBuffering = false
             message = "Riproduzione non riuscita (\(text ?? "formato non supportato")). "
                 + "Con flussi MPEG-TS diretti prova il formato HLS (m3u8) o un altro formato replay."
@@ -63,9 +70,10 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    func play(_ url: URL) {
+    func play(_ url: URL, fallback: URL? = nil) {
         generation += 1
         catchupProgram = nil
+        fallbackURL = fallback
         load(url)
     }
 
@@ -92,6 +100,7 @@ final class PlayerController: ObservableObject {
             variant = good.variant
             onVariantResolved?(good.variant)
         }
+        fallbackURL = nil
         guard let url = CatchupResolver.url(variant: variant, source: source, channel: channel,
                                             start: start, duration: duration) else {
             isBuffering = false

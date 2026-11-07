@@ -90,7 +90,7 @@ final class AppModel: ObservableObject {
         } catch {
             guard generation == loadGeneration else { return }
             channels = []
-            var text = error.localizedDescription
+            var text = (error is IPTVError) ? error.localizedDescription : IPTVService.describe(error)
             if useTailscale { text += " Controlla che Tailscale sia connesso se il server e' nella tailnet." }
             errorMessage = text
             return

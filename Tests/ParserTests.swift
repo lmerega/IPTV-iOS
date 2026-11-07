@@ -76,6 +76,15 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "http://example.invalid/c?s=1767323040&d=600&y=2026")
     }
 
+    func testHLSConversion() {
+        let text = "#EXTM3U\n#EXTINF:-1,Uno\nhttp://example.invalid:80/live/u/p/123.ts\n#EXTINF:-1,Due\nhttp://example.invalid/stream/abc.ts\n"
+        let list = IPTVService.parseM3U(text, base: nil, preferHLS: true)
+        XCTAssertEqual(list[0].url.absoluteString, "http://example.invalid:80/live/u/p/123.m3u8")
+        XCTAssertEqual(list[0].altURL?.lastPathComponent, "123.ts")
+        XCTAssertEqual(list[1].url.lastPathComponent, "abc.ts")
+        XCTAssertNil(list[1].altURL)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

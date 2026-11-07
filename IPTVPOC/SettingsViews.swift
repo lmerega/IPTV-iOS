@@ -21,6 +21,8 @@ struct SettingsView: View {
                                 }
                                 Spacer()
                                 if profile.id == model.selectedID { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                                Button { editing = profile } label: { Image(systemName: "pencil.circle") }
+                                    .buttonStyle(.borderless)
                             }
                         }
                         .swipeActions {
@@ -72,7 +74,11 @@ struct SettingsView: View {
                         Text(tailnet.state).font(.footnote).foregroundStyle(.secondary)
                         Button("Apri app Tailscale", systemImage: "arrow.up.forward.app") { tailnet.openTailscale() }
                     }
-                    Text("L'app usa la VPN gia' attiva nell'app ufficiale Tailscale: non la avvia. Per averla sempre pronta imposta VPN On Demand in Tailscale. I provider pubblici funzionano anche senza.")
+                    if let host = model.current?.host, isTailnet(host) {
+                        Label("Questa sorgente sembra nella tailnet: Tailscale deve essere connesso.", systemImage: "network")
+                            .font(.footnote)
+                    }
+                    Text("Come si usa: 1) accendi la VPN nell'app Tailscale; 2) nella sorgente inserisci l'indirizzo Tailscale del server (100.x.y.z o nome .ts.net); 3) usa \"Verifica\" qui sopra. Questo interruttore non accende la VPN: abilita solo i test e i suggerimenti. I provider pubblici funzionano anche senza Tailscale.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -89,6 +95,12 @@ struct SettingsView: View {
     }
 }
 
+private func isTailnet(_ host: String) -> Bool {
+    if host.hasSuffix(".ts.net") { return true }
+    let parts = host.split(separator: ".").compactMap { Int($0) }
+    return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
+}
+
 struct ProfileEditor: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -102,6 +114,25 @@ struct ProfileEditor: View {
         draft.kind == "xtream"
             ? !draft.server.isEmpty && !draft.username.isEmpty && !draft.password.isEmpty
             : !draft.playlist.isEmpty
+    }
+
+    private var xtreamFromPlaylist: (server: String, user: String, pass: String)? {
+        guard let url = URL(string: draft.playlist.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.path.hasSuffix("get.php"), let host = url.host,
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let user = items.first(where: { $0.name == "username" })?.value,
+              let pass = items.first(where: { $0.name == "password" })?.value else { return nil }
+        let port = url.port.map { ":\($0)" } ?? ""
+        return ("\(url.scheme ?? "http")://\(host)\(port)", user, pass)
+    }
+
+    private func convertToXtream() {
+        guard let found = xtreamFromPlaylist else { return }
+        draft.kind = "xtream"
+        draft.server = found.server
+        draft.username = found.user
+        draft.password = found.pass
+        draft.playlist = ""
     }
 
     var body: some View {
@@ -120,6 +151,12 @@ struct ProfileEditor: View {
                             .textInputAutocapitalization(.never).keyboardType(.URL).autocorrectionDisabled()
                         TextField("URL EPG XMLTV (facoltativo)", text: $draft.epgURL)
                             .textInputAutocapitalization(.never).keyboardType(.URL).autocorrectionDisabled()
+                        Toggle("Converti flussi .ts in HLS (.m3u8)", isOn: $draft.preferHLS)
+                        Text("AVPlayer non riproduce bene il TS diretto: con questa opzione i canali in stile Xtream usano .m3u8, con ritorno automatico al .ts se non funziona.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        if xtreamFromPlaylist != nil {
+                            Button("Converti in sorgente Xtream (consigliato)") { convertToXtream() }
+                        }
                     }
                 } else {
                     Section("Account Xtream") {

@@ -93,7 +93,7 @@ struct PlayerScreen: View {
                 Button { controller.skip(-30) } label: { Image(systemName: "gobackward.30").font(.title2) }
                 Button { controller.skip(30) } label: { Image(systemName: "goforward.30").font(.title2) }
                 if request.channel != nil {
-                    Button { controller.play(request.url) } label: {
+                    Button { controller.play(request.url, fallback: request.channel?.altURL) } label: {
                         Label("Diretta", systemImage: "dot.radiowaves.left.and.right")
                     }.buttonStyle(.bordered)
                 }
@@ -120,7 +120,7 @@ struct PlayerScreen: View {
     private func select(_ program: GuideProgram) {
         guard let channel = request.channel, let source = model.current else { return }
         if program.isLive {
-            controller.play(request.url)
+            controller.play(request.url, fallback: request.channel?.altURL)
         } else if model.canReplay(program, channel: channel) {
             Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
         }
@@ -133,7 +133,7 @@ struct PlayerScreen: View {
         if let channel = request.channel, let program = request.program, let source = model.current {
             await controller.playCatchup(source: source, channel: channel, program: program, offset: 0)
         } else {
-            controller.play(request.url)
+            controller.play(request.url, fallback: request.channel?.altURL)
         }
         if let channel = request.channel { programs = await model.guide(for: channel) }
     }

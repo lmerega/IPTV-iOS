@@ -84,15 +84,12 @@ struct LiveView: View {
                     }
                 } else {
                     VStack(spacing: 0) {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                ForEach(groups, id: \.self) { item in
-                                    Button(item) { group = item }
-                                        .buttonStyle(.bordered)
-                                        .tint(group == item ? .accentColor : .secondary)
-                                }
-                            }.padding(.horizontal).padding(.vertical, 8)
-                        }
+                        CategoryPicker(options: groups, selection: $group, counts: {
+                            var map = Dictionary(model.channels.map { ($0.group, 1) }, uniquingKeysWith: +)
+                            map["Tutti"] = model.channels.count
+                            map["Preferiti"] = model.favorites.count
+                            return map
+                        })
                         List(filtered) { channel in
                             Button { model.play(channel) } label: { ChannelRow(channel: channel) }
                                 .swipeActions {
@@ -146,5 +143,66 @@ struct ChannelRow: View {
         }
         .contentShape(Rectangle())
         .task(id: model.guideRevision) { await model.loadNowNext(channel) }
+    }
+}
+
+struct CategoryPicker: View {
+    let options: [String]
+    @Binding var selection: String
+    let counts: () -> [String: Int]
+    @State private var show = false
+
+    var body: some View {
+        Button { show = true } label: {
+            HStack {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                Text(selection).lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal).padding(.vertical, 6)
+        .sheet(isPresented: $show) {
+            CategorySheet(options: options, selection: $selection, counts: counts())
+                .presentationDetents([.medium, .large])
+        }
+    }
+}
+
+struct CategorySheet: View {
+    let options: [String]
+    @Binding var selection: String
+    let counts: [String: Int]
+    @State private var search = ""
+    @Environment(\.dismiss) private var dismiss
+
+    private var filtered: [String] {
+        search.isEmpty ? options : options.filter { $0.localizedCaseInsensitiveContains(search) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(filtered, id: \.self) { name in
+                Button {
+                    selection = name
+                    dismiss()
+                } label: {
+                    HStack {
+                        Text(name).foregroundStyle(.primary)
+                        Spacer()
+                        if let count = counts[name] { Text(String(count)).font(.caption).foregroundStyle(.secondary) }
+                        if name == selection { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .searchable(text: $search, prompt: "Cerca categoria")
+            .navigationTitle("Categoria")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Chiudi") { dismiss() } }
+        }
     }
 }

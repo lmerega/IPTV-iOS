@@ -40,6 +40,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lmerega.iptvpoc
         CODE_SIGNING_ALLOWED: NO
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   IPTVPOCTests:
     type: bundle.unit-test
     platform: iOS

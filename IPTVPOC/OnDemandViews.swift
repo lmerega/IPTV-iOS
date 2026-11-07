@@ -27,15 +27,11 @@ struct OnDemandView: View {
         NavigationStack {
             ScrollView {
                 if !items.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(categories, id: \.self) { name in
-                                Button(name) { category = name }
-                                    .buttonStyle(.bordered)
-                                    .tint(category == name ? .accentColor : .secondary)
-                            }
-                        }.padding(.horizontal)
-                    }
+                    CategoryPicker(options: categories, selection: $category, counts: {
+                        var map = Dictionary(items.map { ($0.category, 1) }, uniquingKeysWith: +)
+                        map["Tutte"] = items.count
+                        return map
+                    })
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12)], spacing: 14) {
                     ForEach(filtered) { item in

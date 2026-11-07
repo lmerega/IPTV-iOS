@@ -1,11 +1,42 @@
 import Foundation
 
 enum IPTVService {
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = true
+        config.timeoutIntervalForResource = 180
+        return URLSession(configuration: config)
+    }()
+
+    static func describe(_ error: Error) -> String {
+        guard let urlError = error as? URLError else { return error.localizedDescription }
+        switch urlError.code {
+        case .notConnectedToInternet:
+            return "Nessuna connessione (-1009). Controlla rete, VPN o Tailscale e riprova."
+        case .timedOut: return "Il server non risponde (timeout)."
+        case .cannotFindHost, .dnsLookupFailed: return "Nome del server non risolto (DNS)."
+        case .cannotConnectToHost: return "Connessione al server rifiutata."
+        case .secureConnectionFailed, .serverCertificateUntrusted: return "Errore del certificato HTTPS."
+        default: return "Errore di rete (\(urlError.code.rawValue))."
+        }
+    }
+
     static func get(_ url: URL, timeout: TimeInterval = 30) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue("IPTVPOC/0.3", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        var attempt = 0
+        var fetched: (Data, URLResponse)? = nil
+        while fetched == nil {
+            do {
+                fetched = try await session.data(for: request)
+            } catch let error as URLError where attempt < 2 && [.notConnectedToInternet, .networkConnectionLost,
+                                                                .cannotConnectToHost].contains(error.code) {
+                attempt += 1
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+        guard let (data, response) = fetched else { throw IPTVError.invalidResponse }
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw IPTVError.invalidResponse
         }
@@ -70,7 +101,7 @@ enum IPTVService {
         let playlist = try baseURL(source.playlist)
         let data = try await get(playlist, timeout: 90)
         let body = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-        let channels = parseM3U(body, base: playlist)
+        let channels = parseM3U(body, base: playlist, preferHLS: source.preferHLS)
         if channels.isEmpty { throw IPTVError.noChannels }
         return channels
     }
@@ -86,7 +117,15 @@ enum IPTVService {
         var archive = false
     }
 
-    static func parseM3U(_ body: String, base: URL?) -> [IPTVChannel] {
+    /// Converte gli URL live stile Xtream (.../utente/password/ID.ts) in .m3u8, che AVPlayer riproduce.
+    static func hlsVariant(of url: URL) -> URL? {
+        let last = url.lastPathComponent
+        guard last.hasSuffix(".ts"), Int(last.dropLast(3)) != nil,
+              url.pathComponents.count >= 4 else { return nil }
+        return url.deletingPathExtension().appendingPathExtension("m3u8")
+    }
+
+    static func parseM3U(_ body: String, base: URL?, preferHLS: Bool = false) -> [IPTVChannel] {
         var channels: [IPTVChannel] = []
         var used = Set<String>()
         var meta = Meta()
@@ -113,10 +152,12 @@ enum IPTVService {
                 var n = 1
                 while used.contains(id) { n += 1; id = "m" + stableHash(address.absoluteString + "|" + name) + "-\(n)" }
                 used.insert(id)
-                channels.append(IPTVChannel(id: id, name: name, group: meta.group, url: address,
+                let hls = preferHLS ? hlsVariant(of: address) : nil
+                channels.append(IPTVChannel(id: id, name: name, group: meta.group, url: hls ?? address,
                                             streamID: nil, archive: meta.archive, logo: meta.logo,
                                             epgID: meta.epgID, archiveTemplate: meta.template,
-                                            archiveMode: meta.mode, archiveDays: meta.days))
+                                            archiveMode: meta.mode, archiveDays: meta.days,
+                                            altURL: hls == nil ? nil : address))
                 meta = Meta()
             }
         }

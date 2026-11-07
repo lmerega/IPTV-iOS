@@ -19,6 +19,7 @@ struct IPTVChannel: Identifiable, Hashable {
     var archiveTemplate: String? = nil
     var archiveMode: String? = nil
     var archiveDays: Int = 0
+    var altURL: URL? = nil
 }
 
 struct IPTVSource: Codable, Identifiable, Equatable {
@@ -34,12 +35,13 @@ struct IPTVSource: Codable, Identifiable, Equatable {
     var archiveShiftMinutes = 0
     var catchupVariant = "auto"
     var serverTimeZone = ""
+    var preferHLS = true
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, server, username, password, playlist, epgURL
-        case streamFormat, archiveShiftMinutes, catchupVariant, serverTimeZone
+        case streamFormat, archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +58,7 @@ struct IPTVSource: Codable, Identifiable, Equatable {
         archiveShiftMinutes = (try? c.decode(Int.self, forKey: .archiveShiftMinutes)) ?? 0
         catchupVariant = (try? c.decode(String.self, forKey: .catchupVariant)) ?? "auto"
         serverTimeZone = (try? c.decode(String.self, forKey: .serverTimeZone)) ?? ""
+        preferHLS = (try? c.decode(Bool.self, forKey: .preferHLS)) ?? true
     }
 
     var rawAddress: String { kind == "xtream" ? server : playlist }
