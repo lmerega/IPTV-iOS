@@ -58,6 +58,21 @@ struct OnDemandCatalog {
     }
 }
 
+/// Cataloghi gia' preparati, in memoria per tutta la sessione: tornando sulla scheda Film o Serie
+/// non si rilegge ne' si rielabora nulla (con 70.000 titoli richiederebbe secondi).
+@MainActor
+final class OnDemandStore {
+    static let shared = OnDemandStore()
+    private var catalogs: [String: OnDemandCatalog] = [:]
+
+    func catalog(_ key: String) -> OnDemandCatalog? { catalogs[key] }
+
+    func store(_ catalog: OnDemandCatalog, key: String, kind: String) {
+        catalogs = catalogs.filter { !$0.key.hasPrefix(kind + "|") }
+        catalogs[key] = catalog
+    }
+}
+
 struct OnDemandView: View {
     @EnvironmentObject private var model: AppModel
     let kind: OnDemandKind
@@ -68,6 +83,11 @@ struct OnDemandView: View {
     @State private var search = ""
     @State private var query = ""
     @State private var category = OnDemandCatalog.all
+    @State private var loadedKey = ""
+    @State private var shownKey = ""
+
+    private var kindKey: String { kind == .movies ? "movies" : "series" }
+    private var storeKey: String { "\(kindKey)|\(model.selectedID?.uuidString ?? "")|\(model.catalogRevision)" }
 
     private var filterKey: String { "\(category)|\(query)|\(catalog.items.count)" }
 
@@ -102,7 +122,7 @@ struct OnDemandView: View {
                     ContentUnavailableView.search(text: query)
                 }
             }
-            .task(id: "\(model.selectedID?.uuidString ?? "")-\(model.catalogRevision)") { await load() }
+            .task(id: storeKey) { await load(key: storeKey) }
             .refreshable { await model.refreshAll() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -116,13 +136,15 @@ struct OnDemandView: View {
                 if !Task.isCancelled { query = search }
             }
             .task(id: filterKey) {
+                let key = filterKey
+                if key == shownKey { return }
                 let snapshot = catalog
                 let selected = snapshot.categories.contains(category) ? category : OnDemandCatalog.all
                 let text = query
                 let result = await Task.detached(priority: .userInitiated) {
                     snapshot.filter(category: selected, query: text)
                 }.value
-                if !Task.isCancelled { shown = result }
+                if !Task.isCancelled { shown = result; shownKey = key }
             }
         }
     }
@@ -144,16 +166,29 @@ struct OnDemandView: View {
         }
     }
 
-    private func load() async {
+    private func load(key: String) async {
+        // Gia' caricato in questa vista o in memoria: nessun ricaricamento al cambio di scheda.
+        if loadedKey == key && !catalog.items.isEmpty { return }
+        if let saved = OnDemandStore.shared.catalog(key) {
+            shownKey = ""
+            catalog = saved
+            loadedKey = key
+            return
+        }
         catalog = OnDemandCatalog()
         shown = []
+        shownKey = ""
         failure = nil
         guard let source = model.current, source.kind == "xtream" else { return }
         loading = true
         defer { loading = false }
         do {
             let list = kind == .movies ? try await IPTVExtras.movies(source) : try await IPTVExtras.series(source)
-            catalog = await Task.detached(priority: .userInitiated) { OnDemandCatalog(list) }.value
+            let prepared = await Task.detached(priority: .userInitiated) { OnDemandCatalog(list) }.value
+            guard !Task.isCancelled else { return }
+            catalog = prepared
+            loadedKey = key
+            OnDemandStore.shared.store(prepared, key: key, kind: kindKey)
         } catch {
             failure = (error as? IPTVError)?.errorDescription ?? IPTVService.describe(error)
         }
