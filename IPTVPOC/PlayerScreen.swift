@@ -48,6 +48,9 @@ struct PlayerScreen: View {
                     .background(.ultraThinMaterial, in: Capsule()).padding(.bottom, 30)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            handleRotation()
+        }
         .task { await start() }
         .onDisappear {
             controller.stop()
@@ -184,10 +187,26 @@ struct PlayerScreen: View {
         .background(Color.black.ignoresSafeArea())
     }
 
+    private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+
     private func setFullscreen(_ on: Bool) {
         fullscreen = on
         showOverlay(true)
-        requestOrientation(on ? .landscape : .allButUpsideDown)
+        // Su iPhone l'uscita riporta in verticale, altrimenti la rotazione automatica rientrerebbe subito.
+        requestOrientation(on ? .landscape : (isPhone ? .portrait : .allButUpsideDown))
+    }
+
+    /// iPhone: telefono in orizzontale = schermo intero, di nuovo in verticale = vista normale.
+    private func handleRotation() {
+        guard isPhone else { return }
+        let orientation = UIDevice.current.orientation
+        if orientation.isLandscape && !fullscreen {
+            fullscreen = true
+            showOverlay(true)
+        } else if orientation == .portrait && fullscreen {
+            fullscreen = false
+            showOverlay(true)
+        }
     }
 
     // MARK: Controlli
