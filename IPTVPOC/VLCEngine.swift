@@ -88,6 +88,9 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     }
 
     var lengthSeconds: Double { Double(player.media?.length.intValue ?? 0) / 1000.0 }
+    /// Posizione 0...1 nel file: affidabile anche quando la durata stimata da VLC e' sbagliata.
+    var position: Double { Double(player.position) }
+    func setPosition(_ value: Double) { player.position = Float(min(max(value, 0), 0.999)) }
     var timeSeconds: Double { Double(player.time.intValue) / 1000.0 }
 
     /// Risoluzione, fps, codec video e audio del flusso in riproduzione.
@@ -168,6 +171,8 @@ final class VLCEngine: NSObject {
     func togglePause() {}
     var lengthSeconds: Double { 0 }
     var timeSeconds: Double { 0 }
+    var position: Double { 0 }
+    func setPosition(_ value: Double) {}
     func streamSummary() -> String? { nil }
     func seek(to seconds: Double) {}
     func jump(_ delta: Int32) {}

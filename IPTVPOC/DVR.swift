@@ -1,9 +1,21 @@
 import Foundation
 import SwiftUI
 
+/// Dati salvati accanto al file .ts (stesso nome, estensione .json).
+struct RecordingInfo: Codable {
+    var channel: String
+    var started: Date
+    var duration: Double
+}
+
 struct SavedRecording: Identifiable, Hashable {
     let url: URL
     var id: String { url.lastPathComponent }
+    var infoURL: URL { url.deletingPathExtension().appendingPathExtension("json") }
+    var info: RecordingInfo? {
+        guard let data = try? Data(contentsOf: infoURL) else { return nil }
+        return try? JSONDecoder().decode(RecordingInfo.self, from: data)
+    }
     var name: String { url.deletingPathExtension().lastPathComponent }
     var bytes: Int64 { (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0 }
     var date: Date { (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast }
@@ -16,6 +28,14 @@ final class DVRManager: ObservableObject {
     @Published var status = "Nessuna registrazione in corso"
     @Published var files: [SavedRecording] = []
     @Published var recordingName = ""
+    /// Canale in registrazione (per tornarci e per avvisare prima di cambiare canale).
+    @Published var recordingChannel: IPTVChannel?
+    /// Ora a cui la registrazione si ferma da sola (timer).
+    @Published var stopDate: Date?
+    private var timerTask: Task<Void, Never>?
+    private var startedAt = Date()
+    /// Offset nel buffer timeshift da cui parte la registrazione (per guardarla dall'inizio).
+    private(set) var bufferStartOffset: Int64?
     @AppStorage("dvr.limitMB") var limitMB: Int = 2048
     private var job: Task<Void, Never>?
     private var recorder: Task<(Int64, String), Never>?
@@ -39,6 +59,42 @@ final class DVRManager: ObservableObject {
         status = "Registrazione fermata: cambio canale."
     }
 
+    // MARK: Timer
+
+    /// Ferma la registrazione tra `minutes` minuti (nil = nessun timer).
+    func setTimer(minutes: Int?) {
+        setStopDate(minutes.map { Date().addingTimeInterval(Double($0) * 60) })
+    }
+
+    func setStopDate(_ date: Date?) {
+        timerTask?.cancel()
+        timerTask = nil
+        stopDate = date
+        guard let date, isRecording else { return }
+        timerTask = Task { [weak self] in
+            let wait = date.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            guard !Task.isCancelled, let self, self.isRecording else { return }
+            self.stop()
+            self.status = "Registrazione fermata dal timer."
+        }
+    }
+
+    private func finished() {
+        timerTask?.cancel()
+        timerTask = nil
+        stopDate = nil
+        recordingChannel = nil
+        bufferStartOffset = nil
+    }
+
+    private func saveInfo(for output: URL, channel: String, duration: Double) {
+        guard duration > 0, FileManager.default.fileExists(atPath: output.path) else { return }
+        let info = RecordingInfo(channel: channel, started: startedAt, duration: duration)
+        let file = output.deletingPathExtension().appendingPathExtension("json")
+        if let data = try? JSONEncoder().encode(info) { try? data.write(to: file, options: .atomic) }
+    }
+
     func refresh() {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -53,13 +109,17 @@ final class DVRManager: ObservableObject {
     func delete(_ file: SavedRecording) {
         guard file.url != destination else { return }
         try? FileManager.default.removeItem(at: file.url)
+        try? FileManager.default.removeItem(at: file.infoURL)
         refresh()
     }
 
-    func start(channel: IPTVChannel) {
+    func start(channel: IPTVChannel, stopAfterMinutes: Int? = nil, stopAt: Date? = nil) {
         guard !isRecording else { return }
         isRecording = true
         recordingName = channel.name
+        recordingChannel = channel
+        startedAt = Date()
+        defer { setStopDate(stopAt ?? stopAfterMinutes.map { Date().addingTimeInterval(Double($0) * 60) }) }
         status = "Connessione al flusso…"
         let safeName = channel.name.unicodeScalars.map {
             CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" ? String($0) : "_"
@@ -74,6 +134,7 @@ final class DVRManager: ObservableObject {
             bufferRecorder = recorder
             let buffer = timeshift.buffer
             let startOffset = timeshift.recordingStartOffset
+            bufferStartOffset = startOffset
             let limit = Int64(limitMB) * 1_048_576
             let name = channel.name
             status = "Registrazione dal buffer di \(name)…"
@@ -87,10 +148,17 @@ final class DVRManager: ObservableObject {
                 let (bytes, text) = await task.value
                 guard let self else { return }
                 if bytes == 0 { try? FileManager.default.removeItem(at: output) }
+                // Durata dal tempo del flusso (PCR) nel buffer; in mancanza, dall'orologio.
+                let first = buffer.date(at: startOffset)
+                let last = buffer.date(at: startOffset + bytes)
+                let measured = first.flatMap { start in last.map { $0.timeIntervalSince(start) } } ?? 0
+                self.saveInfo(for: output, channel: name,
+                              duration: measured > 1 ? measured : Date().timeIntervalSince(self.startedAt))
                 self.status = text
                 self.isRecording = false
                 self.destination = nil
                 self.bufferRecorder = nil
+                self.finished()
                 if !TimeshiftManager.shared.playerAttached { TimeshiftManager.shared.release(keepForRecording: false) }
                 self.refresh()
             }
@@ -109,10 +177,12 @@ final class DVRManager: ObservableObject {
                 let (bytes, text) = await task.value
                 guard let self else { return }
                 if bytes == 0 { try? FileManager.default.removeItem(at: output) }
+                self.saveInfo(for: output, channel: name, duration: Date().timeIntervalSince(self.startedAt))
                 self.status = text
                 self.isRecording = false
                 self.destination = nil
                 self.recorder = nil
+                self.finished()
                 self.refresh()
             }
         } else {
@@ -174,7 +244,11 @@ final class DVRManager: ObservableObject {
             return
         }
         recorder?.cancel()
-        if recorder == nil { job?.cancel(); job = nil }
+        if recorder == nil {
+            job?.cancel(); job = nil
+            if let destination { saveInfo(for: destination, channel: recordingName, duration: Date().timeIntervalSince(startedAt)) }
+            finished()
+        }
         isRecording = false
         destination = nil
         status = "Registrazione interrotta e salvata."
@@ -190,8 +264,10 @@ final class DVRManager: ObservableObject {
         }
         defer {
             try? handle.close()
+            saveInfo(for: output, channel: recordingName, duration: Date().timeIntervalSince(startedAt))
             isRecording = false
             destination = nil
+            finished()
             refresh()
         }
         var playlistURL = url
@@ -269,12 +345,34 @@ struct RecordingsView: View {
     @ObservedObject private var dvr = DVRManager.shared
     @EnvironmentObject private var model: AppModel
 
+    /// Data · durata reale · dimensione.
+    static func caption(_ recording: SavedRecording, _ info: RecordingInfo?) -> String {
+        var parts = [recording.date.formatted()]
+        if let info { parts.append(Duration.seconds(info.duration).formatted(.time(pattern: .hourMinuteSecond))) }
+        parts.append(ByteCountFormatter.string(fromByteCount: recording.bytes, countStyle: .file))
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     if dvr.isRecording {
                         Label(dvr.status, systemImage: "record.circle").foregroundStyle(.red)
+                        if let stop = dvr.stopDate {
+                            Label("Si ferma alle \(stop.formatted(date: .omitted, time: .shortened))", systemImage: "timer")
+                                .font(.footnote)
+                        }
+                        if let channel = dvr.recordingChannel {
+                            Button("Guarda \(channel.name)", systemImage: "play.tv") { model.play(channel) }
+                            if dvr.isBufferRecording {
+                                Button("Guarda dall'inizio della registrazione", systemImage: "backward.end") {
+                                    model.playing = PlayRequest(title: channel.name, url: channel.url, channel: channel,
+                                                                fromRecordingStart: true)
+                                }
+                            }
+                        }
+                        RecordingTimerMenu(label: "Timer di stop")
                         Button("Ferma registrazione", role: .destructive) { dvr.stop() }
                     } else {
                         Text(dvr.status).foregroundStyle(.secondary)
@@ -286,7 +384,7 @@ struct RecordingsView: View {
                         Text("5 GB").tag(5120)
                         Text("10 GB").tag(10240)
                     }
-                    Text("La registrazione in corso compare qui sopra e continua anche chiudendo il video, finche' l'app resta aperta in primo piano: se esci dall'app o blocchi il telefono, iOS la sospende dopo pochi secondi. Con il timeshift attivo copia i dati dal buffer senza aprire altre connessioni e si ferma cambiando canale.")
+                    Text("La registrazione in corso compare qui sopra: puoi tornare al canale, guardarla dall'inizio mentre registra e impostare un timer di stop. Continua anche chiudendo il video, finche' l'app resta aperta in primo piano: se esci dall'app o blocchi il telefono, iOS la sospende dopo pochi secondi. Con il timeshift attivo copia i dati dal buffer senza aprire altre connessioni e si ferma cambiando canale.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Registrazioni salvate") {
@@ -295,10 +393,14 @@ struct RecordingsView: View {
                                                description: Text("Durante un canale live usa il pulsante Registra."))
                     }
                     ForEach(dvr.files) { recording in
-                        Button { model.playing = PlayRequest(title: recording.name, url: recording.url) } label: {
+                        let info = recording.info
+                        Button {
+                            model.playing = PlayRequest(title: info?.channel ?? recording.name, url: recording.url,
+                                                        knownDuration: info?.duration)
+                        } label: {
                             VStack(alignment: .leading) {
-                                Text(recording.name).lineLimit(2)
-                                Text("\(recording.date.formatted()) · \(ByteCountFormatter.string(fromByteCount: recording.bytes, countStyle: .file))")
+                                Text(info?.channel ?? recording.name).lineLimit(2)
+                                Text(Self.caption(recording, info))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -314,6 +416,33 @@ struct RecordingsView: View {
 }
 
 import AVKit
+
+/// Menu del timer di stop: imposta o cambia l'ora a cui la registrazione si ferma.
+struct RecordingTimerMenu: View {
+    @ObservedObject private var dvr = DVRManager.shared
+    var label: String
+    var programEnd: Date? = nil
+
+    var body: some View {
+        Menu {
+            if let programEnd, programEnd > Date() {
+                Button("A fine programma (\(programEnd.formatted(date: .omitted, time: .shortened)))") {
+                    dvr.setStopDate(programEnd.addingTimeInterval(120))
+                }
+            }
+            ForEach([15, 30, 60, 90, 120, 180], id: \.self) { minutes in
+                Button(minutes < 60 ? "Tra \(minutes) minuti" : "Tra \(minutes / 60) h\(minutes % 60 == 0 ? "" : " \(minutes % 60) min")") {
+                    dvr.setTimer(minutes: minutes)
+                }
+            }
+            if dvr.stopDate != nil {
+                Button("Nessun timer", role: .destructive) { dvr.setTimer(minutes: nil) }
+            }
+        } label: {
+            Label(label, systemImage: "timer")
+        }
+    }
+}
 
 struct VideoPlayback: View {
     let url: URL

@@ -17,12 +17,55 @@ struct ContentView: View {
         .fullScreenCover(item: $model.playing) { request in
             PlayerScreen(request: request).environmentObject(model)
         }
+        .alert("Registrazione in corso", isPresented: Binding(
+            get: { model.pendingChannel != nil },
+            set: { if !$0 { model.pendingChannel = nil } }
+        )) {
+            Button("Cambia canale e ferma la registrazione", role: .destructive) { model.confirmPendingChannel() }
+            if let recording = DVRManager.shared.recordingChannel {
+                Button("Guarda \(recording.name)") {
+                    model.pendingChannel = nil
+                    model.play(recording)
+                }
+            }
+            Button("Annulla", role: .cancel) { model.pendingChannel = nil }
+        } message: {
+            Text("Stai registrando \(DVRManager.shared.recordingName) dal buffer timeshift. Aprendo \(model.pendingChannel?.name ?? "un altro canale") la registrazione si ferma e viene salvata fin qui.")
+        }
         .alert("Errore sorgente", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
             Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+    }
+}
+
+/// Striscia rossa con la registrazione in corso: tocca per tornare al canale.
+struct RecordingBanner: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject private var dvr = DVRManager.shared
+
+    var body: some View {
+        if dvr.isRecording, let channel = dvr.recordingChannel {
+            Button { model.play(channel) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "record.circle.fill")
+                    Text("REC \(channel.name)").lineLimit(1)
+                    if let stop = dvr.stopDate {
+                        Text("· fino alle \(stop.formatted(date: .omitted, time: .shortened))").lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    Text("Torna al canale").font(.caption.bold())
+                }
+                .font(.footnote)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(.red.gradient, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal).padding(.bottom, 4)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 
@@ -110,6 +153,7 @@ struct LiveView: View {
             }
             .navigationTitle(model.current?.displayName ?? "Live")
             .searchable(text: $search, prompt: "Cerca un canale")
+            .safeAreaInset(edge: .top) { RecordingBanner() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refreshAll() } }

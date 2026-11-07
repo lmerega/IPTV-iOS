@@ -368,14 +368,37 @@ struct PlayerScreen: View {
                     .buttonStyle(.bordered).controlSize(.small)
                 }
                 if let channel = request.channel, controller.catchupProgram == nil {
-                    if dvr.isRecording {
+                    if recordingThisChannel {
                         Button(role: .destructive) { dvr.stop() } label: {
                             Label("Stop", systemImage: "stop.circle.fill").lineLimit(1).minimumScaleFactor(0.8)
                         }
                         .buttonStyle(.bordered).controlSize(.small)
-                    } else {
-                        Button { dvr.start(channel: channel) } label: {
+                        RecordingTimerMenu(label: "Timer", programEnd: currentProgramEnd)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.bordered).controlSize(.small)
+                        if dvr.isBufferRecording && controller.tsActive {
+                            Button { controller.seekToRecordingStart() } label: {
+                                Label("Dall'inizio", systemImage: "backward.end").labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .accessibilityLabel("Guarda dall'inizio della registrazione")
+                        }
+                    } else if !dvr.isRecording {
+                        Menu {
+                            if let end = currentProgramEnd {
+                                Button("Fino a fine programma (\(end.formatted(date: .omitted, time: .shortened)))") {
+                                    dvr.start(channel: channel, stopAt: end.addingTimeInterval(120))
+                                }
+                            }
+                            ForEach([30, 60, 120], id: \.self) { minutes in
+                                Button(minutes < 60 ? "Per \(minutes) minuti" : "Per \(minutes / 60) h") {
+                                    dvr.start(channel: channel, stopAfterMinutes: minutes)
+                                }
+                            }
+                        } label: {
                             Label("Registra", systemImage: "record.circle").lineLimit(1).minimumScaleFactor(0.8)
+                        } primaryAction: {
+                            dvr.start(channel: channel)
                         }
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
@@ -429,6 +452,7 @@ struct PlayerScreen: View {
 
     private func start() async {
         controller.channel = request.channel
+        controller.knownDuration = request.knownDuration
         controller.enginePreference = model.current?.engine ?? "auto"
         controller.sourceProvider = { model.current }
         controller.onVariantResolved = { model.setCatchupVariant($0) }
@@ -439,7 +463,24 @@ struct PlayerScreen: View {
         } else {
             controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
         }
+        if request.fromRecordingStart {
+            // Aspetta che il timeshift sia pronto, poi riparte dall'inizio della registrazione.
+            for _ in 0..<40 where !controller.tsActive { try? await Task.sleep(nanoseconds: 250_000_000) }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            controller.seekToRecordingStart()
+        }
         if let channel = request.channel { programs = await model.guide(for: channel) }
+    }
+
+    /// Fine del programma in onda (per il timer "a fine programma").
+    private var currentProgramEnd: Date? {
+        let now = Date()
+        if let live = programs.first(where: { $0.start <= now && $0.end > now }) { return live.end }
+        return request.channel.flatMap { model.nowNext[$0.id]?.first(where: { $0.start <= now && $0.end > now })?.end }
+    }
+
+    private var recordingThisChannel: Bool {
+        dvr.isRecording && dvr.recordingChannel?.id == request.channel?.id
     }
 }
 

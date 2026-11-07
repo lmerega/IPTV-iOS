@@ -35,6 +35,8 @@ final class PlayerController: ObservableObject {
     @Published var logLines: [String] = []
 
     var channel: IPTVChannel?
+    /// Durata reale del file (registrazioni): sostituisce la stima di VLC e la ricerca usa la posizione.
+    var knownDuration: Double?
     var enginePreference = "auto"
     var sourceProvider: (() -> IPTVSource?)?
     var onVariantResolved: ((CatchupVariant) -> Void)?
@@ -159,7 +161,10 @@ final class PlayerController: ObservableObject {
             streamInfo = engine == .vlc ? vlc.streamSummary() : avPlayerSummary()
             refreshTracks()
         }
-        if engine == .vlc && duration <= 0 { duration = vlc.lengthSeconds }
+        if engine == .vlc, let known = knownDuration, known > 0, !tsActive, catchupProgram == nil {
+            duration = known
+            currentTime = vlc.position * known
+        } else if engine == .vlc && duration <= 0 { duration = vlc.lengthSeconds }
         guard catchupProgram != nil else { return }
         position = streamOffset + seconds
     }
@@ -392,6 +397,8 @@ final class PlayerController: ObservableObject {
                                        end: now.addingTimeInterval(3600), description: "", hasArchive: true)
             log("Differita di \(Int(-delta)) s")
             Task { await playCatchup(source: source, channel: channel, program: program, offset: 3 * 3600 + delta) }
+        } else if engine == .vlc, let known = knownDuration, known > 0 {
+            seekMedia(to: min(max(0, currentTime + delta), known))
         } else if engine == .vlc {
             vlc.jump(Int32(delta))
         } else {
@@ -410,8 +417,19 @@ final class PlayerController: ObservableObject {
                                   videoCodec: "", audio: "", bitrate: bitrate)
     }
 
+    /// Riparte dall'inizio della registrazione in corso (stesso buffer timeshift).
+    func seekToRecordingStart() {
+        guard tsActive, let offset = DVRManager.shared.bufferStartOffset,
+              let date = TimeshiftManager.shared.buffer.date(at: offset) else { return }
+        log("Torno all'inizio della registrazione")
+        seekTimeshift(to: date)
+    }
+
     func seekMedia(to seconds: Double) {
-        if engine == .vlc { vlc.seek(to: seconds) }
+        if engine == .vlc, let known = knownDuration, known > 0 {
+            vlc.setPosition(seconds / known)
+            currentTime = seconds
+        } else if engine == .vlc { vlc.seek(to: seconds) }
         else { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     }
 

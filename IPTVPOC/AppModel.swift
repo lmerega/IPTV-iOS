@@ -164,7 +164,22 @@ final class AppModel: ObservableObject {
 
     // MARK: Riproduzione
 
+    /// Canale scelto mentre si registra un altro canale: serve conferma (cambiando canale la registrazione si ferma).
+    @Published var pendingChannel: IPTVChannel?
+
     func play(_ channel: IPTVChannel) {
+        let dvr = DVRManager.shared
+        if dvr.isBufferRecording, let recording = dvr.recordingChannel, recording.id != channel.id {
+            pendingChannel = channel
+            return
+        }
+        playing = PlayRequest(title: channel.name, url: channel.url, channel: channel)
+    }
+
+    /// Conferma: cambia canale (la registrazione dal buffer si ferma).
+    func confirmPendingChannel() {
+        guard let channel = pendingChannel else { return }
+        pendingChannel = nil
         playing = PlayRequest(title: channel.name, url: channel.url, channel: channel)
     }
 

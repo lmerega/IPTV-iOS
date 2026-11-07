@@ -116,6 +116,10 @@ struct PlayRequest: Identifiable {
     var url: URL
     var channel: IPTVChannel? = nil
     var program: GuideProgram? = nil
+    /// Durata reale (registrazioni): VLC la stima male sui file TS.
+    var knownDuration: Double? = nil
+    /// Apre il canale e riparte dall'inizio della registrazione in corso (dal buffer timeshift).
+    var fromRecordingStart = false
 }
 
 enum IPTVError: LocalizedError {
