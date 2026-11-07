@@ -46,6 +46,7 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     }
 
     var lengthSeconds: Double { Double(player.media?.length.intValue ?? 0) / 1000.0 }
+    var timeSeconds: Double { Double(player.time.intValue) / 1000.0 }
 
     /// Risoluzione, fps, codec video e audio del flusso in riproduzione.
     func streamSummary() -> String? {
@@ -121,6 +122,7 @@ final class VLCEngine: NSObject {
     func teardown() {}
     func togglePause() {}
     var lengthSeconds: Double { 0 }
+    var timeSeconds: Double { 0 }
     func streamSummary() -> String? { nil }
     func seek(to seconds: Double) {}
     func jump(_ delta: Int32) {}

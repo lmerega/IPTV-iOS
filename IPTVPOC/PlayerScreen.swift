@@ -19,6 +19,9 @@ struct PlayerScreen: View {
     @State private var fullscreen = false
     @State private var overlayVisible = true
     @State private var hideToken = UUID()
+    @State private var diagnosticTaps: [Date] = []
+    @State private var tapToken = UUID()
+    @State private var toast: String?
 
     private var visiblePrograms: [GuideProgram] {
         programs.filter { $0.start < Date().addingTimeInterval(12 * 3600) }
@@ -38,6 +41,12 @@ struct PlayerScreen: View {
             CatchupDiagnosticsView(controller: controller, channel: request.channel,
                                    program: controller.catchupProgram)
                 .environmentObject(model)
+        }
+        .overlay(alignment: .bottom) {
+            if let toast {
+                Text(toast).font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule()).padding(.bottom, 30)
+            }
         }
         .task { await start() }
         .onDisappear {
@@ -280,13 +289,41 @@ struct PlayerScreen: View {
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
                 }
-                Button { showDiagnostics = true } label: { Image(systemName: "stethoscope").font(.title3) }
+                Button { diagnosticsTapped() } label: { Image(systemName: "stethoscope").font(.title3) }
             }
             Text(controller.engine == .vlc ? "Motore: VLC" : "Motore: AVPlayer (AirPlay disponibile)")
                 .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             if dvr.isRecording {
                 Text(dvr.status).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    private func diagnosticsTapped() {
+        let now = Date()
+        diagnosticTaps = diagnosticTaps.filter { now.timeIntervalSince($0) < 1 } + [now]
+        let token = UUID()
+        tapToken = token
+        if diagnosticTaps.count >= 3 {
+            diagnosticTaps = []
+            let content = LogUploader.report(controller: controller, source: model.current)
+            Task {
+                let name = await LogUploader.upload(content)
+                showToast(name.map { "Inviato: \($0)" } ?? "Invio non riuscito")
+            }
+            return
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            if tapToken == token && diagnosticTaps.count < 3 { showDiagnostics = true }
+        }
+    }
+
+    private func showToast(_ text: String) {
+        withAnimation { toast = text }
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            withAnimation { toast = nil }
         }
     }
 

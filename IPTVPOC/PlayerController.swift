@@ -23,6 +23,10 @@ final class PlayerController: ObservableObject {
     @Published var tsPosition = Date()
     @Published var tsRange: ClosedRange<Date>?
     private var tsStartDate = Date()
+    private var heartbeat: Timer?
+    private var lastReportedTime: Double = 0
+    private var estimatedTime: Double = 0
+    private var heartbeatCount = 0
     private var lastInfoUpdate = Date.distantPast
     @Published var logLines: [String] = []
 
@@ -73,6 +77,31 @@ final class PlayerController: ObservableObject {
             self.tick(seconds)
         }
         vlc.onState = { [weak self] text in self?.log(text) }
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.heartbeatTick() }
+        }
+    }
+
+    /// Aggiornamento ogni secondo indipendente dagli eventi di VLC, che sulle dirette HTTP
+    /// spesso non segnala l'avanzamento del tempo finche' non si mette in pausa o si salta.
+    private func heartbeatTick() {
+        heartbeatCount += 1
+        if engine == .vlc {
+            let playing = vlc.isPlaying
+            if playing && isBuffering { isBuffering = false; message = nil }
+            let reported = vlc.timeSeconds
+            if reported > lastReportedTime + 0.2 {
+                lastReportedTime = reported
+                estimatedTime = reported
+            } else if playing && !isPaused {
+                estimatedTime += 1
+            }
+            tick(estimatedTime)
+        }
+        if tsActive && heartbeatCount % 10 == 0 {
+            let timeshift = TimeshiftManager.shared
+            log("Buffer: \(timeshift.buffer.end / 1_048_576) MB, \(timeshift.bufferedMinutes) min, indietro \(Int(tsBehind)) s")
+        }
     }
 
     func log(_ text: String) {
@@ -131,6 +160,8 @@ final class PlayerController: ObservableObject {
         currentURL = url
         let chosen = forceEngine ?? engineFor(url)
         engine = chosen
+        lastReportedTime = 0
+        estimatedTime = 0
         isPaused = false
         log("Apro \(describe(url)) con \(chosen == .vlc ? "VLC" : "AVPlayer")")
         if chosen == .vlc {
@@ -340,6 +371,8 @@ final class PlayerController: ObservableObject {
         player.replaceCurrentItem(with: nil)
         statusObservation = nil
         vlc.teardown()
+        heartbeat?.invalidate()
+        heartbeat = nil
         if tsActive {
             tsActive = false
         }
