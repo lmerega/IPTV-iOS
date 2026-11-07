@@ -265,34 +265,40 @@ struct PlayerScreen: View {
             if let program = controller.catchupProgram { seekBar(program) }
             timeshiftBar
             mediaBar
-            HStack(spacing: 18) {
+            // Riga 1: trasporto. Riga 2: azioni. Nessun elemento a larghezza fissa, cosi' la riga
+            // non supera mai lo schermo (altrimenti SwiftUI allarga e taglia l'intera schermata).
+            HStack(spacing: 24) {
                 pauseButton.font(.title2)
                 skipButton(-30, "gobackward.30")
                 skipButton(30, "goforward.30")
-                Spacer()
+                Spacer(minLength: 8)
+                Button { diagnosticsTapped() } label: { Image(systemName: "stethoscope").font(.title3) }
+            }
+            HStack(spacing: 10) {
                 if showLiveButton {
                     Button { goLive() } label: {
-                        Label("Diretta", systemImage: "dot.radiowaves.left.and.right").lineLimit(1).fixedSize()
+                        Label("Diretta", systemImage: "dot.radiowaves.left.and.right")
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
                     .buttonStyle(.bordered).controlSize(.small)
                 }
                 if let channel = request.channel, controller.catchupProgram == nil {
                     if dvr.isRecording {
                         Button(role: .destructive) { dvr.stop() } label: {
-                            Label("Stop", systemImage: "stop.circle.fill").lineLimit(1).fixedSize()
+                            Label("Stop", systemImage: "stop.circle.fill").lineLimit(1).minimumScaleFactor(0.8)
                         }
                         .buttonStyle(.bordered).controlSize(.small)
                     } else {
                         Button { dvr.start(channel: channel) } label: {
-                            Label("Registra", systemImage: "record.circle").lineLimit(1).fixedSize()
+                            Label("Registra", systemImage: "record.circle").lineLimit(1).minimumScaleFactor(0.8)
                         }
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
                 }
-                Button { diagnosticsTapped() } label: { Image(systemName: "stethoscope").font(.title3) }
+                Spacer(minLength: 0)
+                Text(controller.engine == .vlc ? "VLC" : "AVPlayer · AirPlay")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
-            Text(controller.engine == .vlc ? "Motore: VLC" : "Motore: AVPlayer (AirPlay disponibile)")
-                .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             if dvr.isRecording {
                 Text(dvr.status).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
             }
