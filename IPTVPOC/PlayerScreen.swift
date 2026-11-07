@@ -339,7 +339,7 @@ struct PlayerScreen: View {
                     }
                 }
                 Spacer(minLength: 0)
-                Text(controller.engine == .vlc ? "VLC" : "AVPlayer · AirPlay")
+                Text(controller.engine == .vlc ? "VLC" : "AVPlayer")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
             if dvr.isRecording {

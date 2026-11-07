@@ -12,6 +12,22 @@ enum CatchupVariant: String, CaseIterable, Identifiable {
         case .utc: return "Live con ?utc= (shift)"
         }
     }
+
+    /// Spiegazione in parole semplici di come viene chiesta una puntata passata al server.
+    var explanation: String {
+        switch self {
+        case .auto:
+            return "L'app prova da sola i formati qui sotto e ricorda il primo che risponde. Va bene quasi sempre."
+        case .m3u8:
+            return "Chiede la puntata come playlist HLS (/timeshift/…/canale.m3u8). Funziona con AVPlayer e AirPlay, ma solo se il server fornisce HLS."
+        case .php:
+            return "Chiede la puntata allo script timeshift.php del server Xtream, che invia un flusso TS. E' il metodo classico dei pannelli Xtream."
+        case .ts:
+            return "Chiede la puntata come file TS diretto (/timeshift/…/canale.ts). Simile a timeshift.php, con un indirizzo diverso."
+        case .utc:
+            return "Riapre il canale live aggiungendo ?utc=inizio: il server riparte da quell'orario. Usato dai proxy e da alcuni provider."
+        }
+    }
 }
 
 struct CatchupProbeResult: Identifiable {

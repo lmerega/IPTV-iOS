@@ -16,6 +16,37 @@ struct SettingsView: View {
         }
     }
 
+    /// Correzioni orario sensate: da -3 a +3 ore, a passi di 5 minuti fino a un'ora e poi di 15.
+    private static let shiftChoices: [Int] = {
+        let fine = Array(stride(from: 5, through: 60, by: 5))
+        let coarse = Array(stride(from: 75, through: 180, by: 15))
+        let positive = fine + coarse
+        return positive.reversed().map { -$0 } + [0] + positive
+    }()
+
+    private static func shiftLabel(_ minutes: Int) -> String {
+        if minutes == 0 { return "Nessuna" }
+        let sign = minutes > 0 ? "+" : "−"
+        let value = abs(minutes)
+        let text = value >= 60
+            ? (value % 60 == 0 ? "\(value / 60) h" : "\(value / 60) h \(value % 60) min")
+            : "\(value) min"
+        return sign + text
+    }
+
+    private static let zoneChoices: [String] = TimeZone.knownTimeZoneIdentifiers.sorted()
+
+    static func zoneLabel(_ identifier: String) -> String {
+        guard let zone = TimeZone(identifier: identifier) else { return identifier }
+        let seconds = zone.secondsFromGMT()
+        let hours = seconds / 3600
+        let minutes = abs(seconds % 3600) / 60
+        let offset = minutes == 0 ? String(format: "%+ld", hours) : String(format: "%+ld:%02ld", hours, minutes)
+        return "\(identifier.replacingOccurrences(of: "_", with: " ")) (UTC\(offset))"
+    }
+
+    private var avPlayerUsable: Bool { model.current?.hlsSupported != false }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -59,15 +90,27 @@ struct SettingsView: View {
                             set: { value in model.mutateCurrent { $0.catchupVariant = value } })) {
                             ForEach(CatchupVariant.allCases) { Text($0.label).tag($0.rawValue) }
                         }
-                        Stepper("Correzione orario: \(model.current?.archiveShiftMinutes ?? 0) min",
-                                value: Binding(get: { model.current?.archiveShiftMinutes ?? 0 },
-                                               set: { value in model.mutateCurrent { $0.archiveShiftMinutes = value } }),
-                                in: -720...720, step: 15)
-                        TextField("Fuso orario server (es. Europe/Rome)", text: Binding(
-                            get: { model.current?.serverTimeZone ?? "" },
-                            set: { value in model.mutateCurrent { $0.serverTimeZone = value } }))
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        Text("Con \"Automatico\" l'app prova i formati noti e memorizza quello che risponde. Il test manuale e' nel player (icona stetoscopio).")
+                        Text((CatchupVariant(rawValue: model.current?.catchupVariant ?? "auto") ?? .auto).explanation)
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Picker("Correzione orario", selection: Binding(
+                            get: {
+                                let value = model.current?.archiveShiftMinutes ?? 0
+                                return Self.shiftChoices.contains(value) ? value : 0
+                            },
+                            set: { value in model.mutateCurrent { $0.archiveShiftMinutes = value } })) {
+                            ForEach(Self.shiftChoices, id: \.self) { Text(Self.shiftLabel($0)).tag($0) }
+                        }
+                        Picker("Fuso orario server", selection: Binding(
+                            get: {
+                                let value = model.current?.serverTimeZone ?? ""
+                                return TimeZone(identifier: value) == nil ? "" : value
+                            },
+                            set: { value in model.mutateCurrent { $0.serverTimeZone = value } })) {
+                            Text("Automatico (dal server)").tag("")
+                            ForEach(Self.zoneChoices, id: \.self) { Text(Self.zoneLabel($0)).tag($0) }
+                        }
+                        .pickerStyle(.navigationLink)
+                        Text("Correzione orario: usala solo se il replay parte prima o dopo l'inizio del programma. Fuso orario: viene letto dal server Xtream; cambialo solo se gli orari della guida sono sfasati di ore intere. Il test dei formati e' nel player (icona stetoscopio).")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -78,12 +121,27 @@ struct SettingsView: View {
                             get: { model.current?.engine ?? "auto" },
                             set: { value in model.mutateCurrent { $0.engine = value } })) {
                             Text("Automatico").tag("auto")
-                            Text("AVPlayer (AirPlay)").tag("avplayer")
-                            Text("VLC (TS e altri formati)").tag("vlc")
+                            if avPlayerUsable || model.current?.engine == "avplayer" {
+                                Text("AVPlayer (Apple, con AirPlay)").tag("avplayer")
+                            }
+                            Text("VLC").tag("vlc")
                         }
                         LabeledContent("HLS (.m3u8) sul server", value: hlsLabel)
-                        Text("Automatico: AVPlayer per HLS/MP4, VLC per TS e formati non supportati; se AVPlayer fallisce passa a VLC.")
+                        if avPlayerUsable {
+                            Text("""
+                            Automatico: sceglie da solo per ogni flusso. Consigliato.
+                            AVPlayer: il player di Apple. Consuma meno batteria e permette AirPlay verso Apple TV, ma riproduce solo HLS (.m3u8) e MP4.
+                            VLC: riproduce anche i flussi TS e quasi tutti i formati audio e video. Serve per il timeshift. Non supporta AirPlay.
+                            Se AVPlayer non riesce ad aprire un flusso, l'app passa da sola a VLC.
+                            """)
                             .font(.footnote).foregroundStyle(.secondary)
+                        } else {
+                            Text("""
+                            Il tuo server fornisce solo flussi TS: AVPlayer e AirPlay non possono riprodurli, quindi viene usato VLC.
+                            VLC riproduce TS e quasi tutti i formati audio e video e gestisce il timeshift.
+                            """)
+                            .font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                 }
 

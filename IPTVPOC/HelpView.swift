@@ -23,7 +23,7 @@ struct HelpView: View {
         ]),
         ("Riproduzione", [
             Entry(title: "Motore video",
-                  text: "AVPlayer e' il player di Apple: supporta AirPlay ma non il TS diretto. VLC riproduce TS e quasi tutti i formati, senza AirPlay. Automatico sceglie in base al flusso e passa a VLC se AVPlayer fallisce."),
+                  text: "Automatico sceglie da solo ed e' consigliato. AVPlayer e' il player di Apple: consuma meno e permette AirPlay, ma riproduce solo HLS (.m3u8) e MP4; se il server fornisce solo TS non viene proposto. VLC riproduce TS e quasi tutti i formati, gestisce il timeshift, ma non supporta AirPlay."),
             Entry(title: "HLS sul server",
                   text: "Risultato del controllo automatico: indica se il tuo server fornisce davvero flussi .m3u8."),
             Entry(title: "±30 secondi e Diretta",
@@ -47,11 +47,11 @@ struct HelpView: View {
             Entry(title: "Filtro",
                   text: "\"Solo canali con replay\" mostra i canali per cui il provider conserva le puntate passate. \"Tutti i canali\" mostra anche quelli con sola guida."),
             Entry(title: "Formato replay",
-                  text: "Il modo in cui l'app chiede al server una puntata passata. Automatico prova i formati noti e ricorda quello che funziona. Il test manuale e' nel player, icona stetoscopio."),
+                  text: "Il modo in cui l'app chiede al server una puntata passata: playlist HLS, script timeshift.php, file TS diretto oppure il canale live con ?utc=orario. Sotto il selettore c'e' la spiegazione di quello scelto. Automatico prova i formati e ricorda quello che funziona."),
             Entry(title: "Correzione orario",
-                  text: "Se il replay parte prima o dopo l'inizio del programma, sposta l'orario richiesto di questi minuti."),
+                  text: "Se il replay parte prima o dopo l'inizio del programma, sposta l'orario richiesto (da -3 a +3 ore)."),
             Entry(title: "Fuso orario server",
-                  text: "Viene letto dal server Xtream. Serve per calcolare l'ora giusta delle puntate.")
+                  text: "Viene letto dal server Xtream. Si sceglie da un elenco solo se gli orari risultano sfasati di ore intere.")
         ]),
         ("Registrazioni", [
             Entry(title: "Come funzionano",
