@@ -102,6 +102,14 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(IPTVService.applyFormat(swapped, hls: false)[0].url, ts)
     }
 
+    func testStreamInfoSummary() {
+        XCTAssertEqual(StreamInfo.codecName(NSNumber(value: UInt32(0x34363268))), "H.264") // "h264"
+        let text = StreamInfo.summary(width: 1920, height: 1080, fps: 50, videoCodec: "H.264",
+                                      audio: StreamInfo.audioLabel(codec: "MPEG audio", channels: 2, rate: 48000), bitrate: 0)
+        XCTAssertEqual(text, "FHD 1920×1080 · 50 fps · H.264 · Audio MPEG audio stereo 48 kHz")
+        XCTAssertNil(StreamInfo.summary(width: 0, height: 0, fps: 0, videoCodec: "", audio: "", bitrate: 0))
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

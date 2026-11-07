@@ -18,6 +18,8 @@ final class PlayerController: ObservableObject {
     @Published var isLive = false
     @Published var duration: Double = 0
     @Published var currentTime: Double = 0
+    @Published var streamInfo: String?
+    private var lastInfoUpdate = Date.distantPast
     @Published var logLines: [String] = []
 
     var channel: IPTVChannel?
@@ -92,6 +94,10 @@ final class PlayerController: ObservableObject {
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
         currentTime = seconds
+        if Date().timeIntervalSince(lastInfoUpdate) > 2 {
+            lastInfoUpdate = Date()
+            streamInfo = engine == .vlc ? vlc.streamSummary() : avPlayerSummary()
+        }
         if engine == .vlc && duration <= 0 { duration = vlc.lengthSeconds }
         guard catchupProgram != nil else { return }
         position = streamOffset + seconds
@@ -164,6 +170,7 @@ final class PlayerController: ObservableObject {
         isLive = live
         duration = 0
         currentTime = 0
+        streamInfo = nil
         fallbackURL = fallback
         triedVLC = false
         load(url)
@@ -246,6 +253,16 @@ final class PlayerController: ObservableObject {
             let target = max(0, player.currentTime().seconds + delta)
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
+    }
+
+    private func avPlayerSummary() -> String? {
+        guard let item = player.currentItem else { return nil }
+        let size = item.presentationSize
+        let video = item.tracks.first { $0.assetTrack?.mediaType == .video }
+        let fps = Double(video?.currentVideoFrameRate ?? 0)
+        let bitrate = item.accessLog()?.events.last?.indicatedBitrate ?? 0
+        return StreamInfo.summary(width: Int(size.width), height: Int(size.height), fps: fps,
+                                  videoCodec: "", audio: "", bitrate: bitrate)
     }
 
     func seekMedia(to seconds: Double) {

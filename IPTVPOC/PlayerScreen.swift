@@ -18,6 +18,7 @@ struct PlayerScreen: View {
     @State private var scrub: Double = 0
     @State private var fullscreen = false
     @State private var overlayVisible = true
+    @State private var hideToken = UUID()
 
     private var visiblePrograms: [GuideProgram] {
         programs.filter { $0.start < Date().addingTimeInterval(12 * 3600) }
@@ -65,6 +66,30 @@ struct PlayerScreen: View {
             if controller.isPaused {
                 Image(systemName: "pause.circle.fill").font(.system(size: 54)).foregroundStyle(.white.opacity(0.85))
             }
+            if controller.engine == .vlc && !fullscreen {
+                Color.clear.contentShape(Rectangle()).onTapGesture { showOverlay(!overlayVisible) }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if overlayVisible, let info = controller.streamInfo {
+                Text(info)
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(fullscreen ? 56 : 8)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func showOverlay(_ visible: Bool) {
+        withAnimation { overlayVisible = visible }
+        guard visible else { return }
+        let token = UUID()
+        hideToken = token
+        Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if hideToken == token && !controller.isPaused && !dragging { withAnimation { overlayVisible = false } }
         }
     }
 
@@ -119,7 +144,7 @@ struct PlayerScreen: View {
         ZStack {
             videoSurface.ignoresSafeArea()
             Color.clear.contentShape(Rectangle())
-                .onTapGesture { withAnimation { overlayVisible.toggle() } }
+                .onTapGesture { showOverlay(!overlayVisible) }
             if overlayVisible {
                 VStack {
                     HStack {
@@ -151,7 +176,7 @@ struct PlayerScreen: View {
 
     private func setFullscreen(_ on: Bool) {
         fullscreen = on
-        overlayVisible = true
+        showOverlay(true)
         requestOrientation(on ? .landscape : .allButUpsideDown)
     }
 
@@ -251,6 +276,7 @@ struct PlayerScreen: View {
         controller.sourceProvider = { model.current }
         controller.onVariantResolved = { model.setCatchupVariant($0) }
         controller.log("Avvio riproduzione")
+        showOverlay(true)
         if let channel = request.channel, let program = request.program, let source = model.current {
             await controller.playCatchup(source: source, channel: channel, program: program, offset: 0)
         } else {

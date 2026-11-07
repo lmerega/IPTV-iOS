@@ -12,7 +12,7 @@ enum IPTVService {
         guard let urlError = error as? URLError else { return error.localizedDescription }
         switch urlError.code {
         case .notConnectedToInternet:
-            return "Nessuna connessione (-1009). Controlla rete, VPN o Tailscale e riprova."
+            return "Nessuna connessione (-1009). Controlla la rete e riprova (Impostazioni > Verifica connessione)."
         case .timedOut: return "Il server non risponde (timeout)."
         case .cannotFindHost, .dnsLookupFailed: return "Nome del server non risolto (DNS)."
         case .cannotConnectToHost: return "Connessione al server rifiutata."

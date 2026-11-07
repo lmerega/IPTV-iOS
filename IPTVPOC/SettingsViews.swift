@@ -2,8 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @AppStorage("network.tailscaleEnabled") private var useTailscale = false
-    @StateObject private var tailnet = TailnetDiagnostics()
+    @StateObject private var network = NetworkDiagnostics()
     @State private var editing: IPTVSource?
     @State private var showNew = false
 
@@ -87,29 +86,22 @@ struct SettingsView: View {
                 }
 
                 Section("Rete") {
-                    Button(tailnet.checking ? "Verifica in corso…" : "Verifica raggiungibilita' del server") {
-                        if let address = model.current?.rawAddress {
-                            Task { await tailnet.check(server: address) }
-                        }
-                    }.disabled(tailnet.checking || model.current == nil)
-                    Text(tailnet.state).font(.footnote).foregroundStyle(.secondary)
-                }
-
-                Section("Tailscale") {
-                    Toggle("Uso Tailscale per server privati", isOn: $useTailscale)
-                    if useTailscale {
-                        Button("Apri app Tailscale", systemImage: "arrow.up.forward.app") { tailnet.openTailscale() }
-                    }
-                    if let host = model.current?.host, isTailnet(host) {
-                        Label("Questa sorgente sembra nella tailnet: Tailscale deve essere connesso.", systemImage: "network")
+                    Button(network.running ? "Verifica in corso…" : "Verifica connessione", systemImage: "network") {
+                        Task { await network.run(source: model.current) }
+                    }.disabled(network.running)
+                    ForEach(network.lines) { line in
+                        Label(line.text, systemImage: line.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                            .foregroundStyle(line.ok ? Color.green : Color.red)
                             .font(.footnote)
                     }
-                    Text("Come si usa: 1) accendi la VPN nell'app Tailscale; 2) nella sorgente inserisci l'indirizzo Tailscale del server (100.x.y.z o nome .ts.net); 3) usa \"Verifica raggiungibilita'\" nella sezione Rete. Questo interruttore non accende la VPN: abilita solo i test e i suggerimenti. I provider pubblici funzionano anche senza Tailscale.")
-                        .font(.footnote).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    NavigationLink { HelpView() } label: { Label("Guida alle opzioni", systemImage: "questionmark.circle") }
                 }
 
                 Section("Informazioni") {
-                    LabeledContent("Versione", value: "0.3")
+                    LabeledContent("Versione", value: "0.6")
                     Text("DVR e replay sono sperimentali. Le credenziali sono nel Keychain del dispositivo.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -119,12 +111,6 @@ struct SettingsView: View {
             .sheet(item: $editing) { ProfileEditor(profile: $0) }
         }
     }
-}
-
-private func isTailnet(_ host: String) -> Bool {
-    if host.hasSuffix(".ts.net") { return true }
-    let parts = host.split(separator: ".").compactMap { Int($0) }
-    return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
 }
 
 struct ProfileEditor: View {

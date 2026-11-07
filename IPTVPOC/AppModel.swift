@@ -16,7 +16,6 @@ final class AppModel: ObservableObject {
 
     private var xmltv: [String: [GuideProgram]] = [:]
     private var loadGeneration = 0
-    @AppStorage("network.tailscaleEnabled") private var useTailscale = false
 
     var current: IPTVSource? { profiles.first { $0.id == selectedID } }
 
@@ -92,9 +91,7 @@ final class AppModel: ObservableObject {
         } catch {
             guard generation == loadGeneration else { return }
             channels = []
-            var text = (error is IPTVError) ? error.localizedDescription : IPTVService.describe(error)
-            if useTailscale { text += " Controlla che Tailscale sia connesso se il server e' nella tailnet." }
-            errorMessage = text
+            errorMessage = (error is IPTVError) ? error.localizedDescription : IPTVService.describe(error)
             return
         }
         isLoading = false
