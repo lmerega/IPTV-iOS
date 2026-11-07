@@ -311,6 +311,38 @@ final class PlayerController: ObservableObject {
         if let textGroup, let chosen = selection.selectedMediaOption(in: textGroup),
            let index = textOptions.firstIndex(of: chosen) { currentSubtitle = Int32(index) }
         log("AVPlayer: \(audioInFile) tracce audio nel file, \(audioOptions.count) selezionabili, \(textOptions.count) sottotitoli")
+        if audioOptions.count < 2 && audioInFile > 1 { await useManualAudioTracks(item) }
+    }
+
+    /// Tracce audio dell'item gestite a mano (MP4 senza gruppi alternativi).
+    private var avManualAudio: [AVPlayerItemTrack] = []
+
+    /// Molti MP4 hanno piu' tracce audio tutte attive e non raggruppate: AVPlayer le suona insieme
+    /// (lingue sovrapposte). Se ne lascia attiva una sola, preferendo la lingua del telefono,
+    /// e il menu lingue le attiva una alla volta.
+    private func useManualAudioTracks(_ item: AVPlayerItem) async {
+        let tracks = item.tracks.filter { $0.assetTrack?.mediaType == .audio }
+        guard tracks.count > 1 else { return }
+        var names: [String] = []
+        var codes: [String] = []
+        for (index, track) in tracks.enumerated() {
+            var code = ""
+            if let asset = track.assetTrack {
+                code = (try? await asset.load(.extendedLanguageTag)) ?? nil ?? ""
+                if code.isEmpty { code = (try? await asset.load(.languageCode)) ?? nil ?? "" }
+            }
+            codes.append(code)
+            let language = code.isEmpty || code == "und" ? nil : Locale.current.localizedString(forIdentifier: code)
+            names.append(language.map { "\($0.capitalized) (traccia \(index + 1))" } ?? "Traccia \(index + 1)")
+        }
+        guard item === player.currentItem, engine == .avplayer else { return }
+        let preferred = Locale.current.language.languageCode?.identifier ?? "it"
+        let chosen = codes.firstIndex { $0.lowercased().hasPrefix(preferred) } ?? 0
+        for (index, track) in tracks.enumerated() { track.isEnabled = index == chosen }
+        avManualAudio = tracks
+        audioTracks = names.enumerated().map { MediaTrack(id: Int32($0.offset), name: $0.element) }
+        currentAudio = Int32(chosen)
+        log("AVPlayer: lingue sovrapposte evitate, attiva \(names[chosen])")
     }
 
     /// Riapre il film con VLC dallo stesso punto: VLC vede tutte le tracce audio e i sottotitoli.
@@ -325,7 +357,11 @@ final class PlayerController: ObservableObject {
 
     func selectAudio(_ track: MediaTrack) {
         if engine == .avplayer {
-            if let group = avAudioGroup, group.options.indices.contains(Int(track.id)) {
+            if !avManualAudio.isEmpty, avManualAudio.indices.contains(Int(track.id)) {
+                for (index, item) in avManualAudio.enumerated() { item.isEnabled = index == Int(track.id) }
+                currentAudio = track.id
+                log("Audio: \(track.name)")
+            } else if let group = avAudioGroup, group.options.indices.contains(Int(track.id)) {
                 player.currentItem?.select(group.options[Int(track.id)], in: group)
                 currentAudio = track.id
                 log("Audio: \(track.name)")
@@ -376,6 +412,7 @@ final class PlayerController: ObservableObject {
         subtitleTracks = []
         avAudioGroup = nil
         avTextGroup = nil
+        avManualAudio = []
         avAudioTracksInFile = 0
         stalledTicks = 0
         loadDate = Date()
