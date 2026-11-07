@@ -74,12 +74,26 @@ final class PlayerController: ObservableObject {
         vlc.onTime = { [weak self] seconds in
             guard let self else { return }
             if self.isBuffering { self.isBuffering = false; self.message = nil; self.log("VLC: immagini in arrivo") }
-            self.tick(seconds)
+            self.advance(reported: seconds)
         }
         vlc.onState = { [weak self] text in self?.log(text) }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.heartbeatTick() }
         }
+    }
+
+    /// In diretta/timeshift il tempo VLC puo' essere assoluto (orologio del flusso): si usano solo gli incrementi.
+    /// Per file e VOD si usa il tempo VLC cosi' com'e'.
+    private func advance(reported: Double) {
+        guard tsActive || isLive else {
+            lastReportedTime = reported
+            tick(reported)
+            return
+        }
+        let delta = reported - lastReportedTime
+        if lastReportedTime > 0, delta > 0, delta < 5 { estimatedTime += delta }
+        lastReportedTime = reported
+        tick(estimatedTime)
     }
 
     /// Aggiornamento ogni secondo indipendente dagli eventi di VLC, che sulle dirette HTTP
@@ -90,13 +104,12 @@ final class PlayerController: ObservableObject {
             let playing = vlc.isPlaying
             if playing && isBuffering { isBuffering = false; message = nil }
             let reported = vlc.timeSeconds
-            if reported > lastReportedTime + 0.2 {
-                lastReportedTime = reported
-                estimatedTime = reported
-            } else if playing && !isPaused {
+            if reported != lastReportedTime {
+                advance(reported: reported)
+            } else if playing && !isPaused && (tsActive || isLive) {
                 estimatedTime += 1
+                tick(estimatedTime)
             }
-            tick(estimatedTime)
         }
         if tsActive && heartbeatCount % 10 == 0 {
             let timeshift = TimeshiftManager.shared
@@ -133,7 +146,7 @@ final class PlayerController: ObservableObject {
             let timeshift = TimeshiftManager.shared
             tsPosition = tsStartDate.addingTimeInterval(seconds)
             tsRange = timeshift.buffer.dateRange
-            timeshift.playbackOffset = timeshift.buffer.offset(at: tsPosition)
+            timeshift.playbackDate = tsPosition
         }
         if Date().timeIntervalSince(lastInfoUpdate) > 2 {
             lastInfoUpdate = Date()

@@ -17,6 +17,8 @@ targets:
       path: IPTVPOC/Info.plist
       properties:
         CFBundleDisplayName: IPTV
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:
@@ -38,6 +40,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.lmerega.iptvpoc
+        MARKETING_VERSION: "0.7.2"
+        CURRENT_PROJECT_VERSION: "1"
         CODE_SIGNING_ALLOWED: NO
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

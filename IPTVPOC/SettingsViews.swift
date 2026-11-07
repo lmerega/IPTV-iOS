@@ -121,7 +121,7 @@ struct SettingsView: View {
                 }
 
                 Section("Informazioni") {
-                    LabeledContent("Versione", value: "0.6")
+                    LabeledContent("Versione", value: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
                     Text("DVR e replay sono sperimentali. Le credenziali sono nel Keychain del dispositivo.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

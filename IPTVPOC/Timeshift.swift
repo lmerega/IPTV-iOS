@@ -385,8 +385,13 @@ final class TimeshiftManager: ObservableObject {
     @Published private(set) var channelID: String?
     @Published private(set) var channelName = ""
     @Published private(set) var downloading = false
-    /// Offset di cio' che l'utente sta guardando (per far partire le registrazioni da li').
-    var playbackOffset: Int64?
+    /// Istante (ora di diretta) di cio' che l'utente sta guardando, per far partire le registrazioni da li'.
+    var playbackDate: Date?
+
+    /// Punto di partenza di una registrazione: 5 secondi prima di cio' che si vede.
+    var recordingStartOffset: Int64 {
+        buffer.offset(at: (playbackDate ?? Date()).addingTimeInterval(-5))
+    }
     var onChannelChange: (() -> Void)?
     private(set) var playerAttached = false
 
@@ -443,7 +448,7 @@ final class TimeshiftManager: ObservableObject {
         guard !keepForRecording else { return }
         downloader.stop()
         downloading = false
-        playbackOffset = nil
+        playbackDate = nil
     }
 
     func clear() {

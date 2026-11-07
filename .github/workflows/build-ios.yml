@@ -40,6 +40,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             build
       - name: Check Info.plist
         run: |

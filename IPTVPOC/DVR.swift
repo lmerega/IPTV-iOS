@@ -73,7 +73,7 @@ final class DVRManager: ObservableObject {
             let recorder = BufferRecorder()
             bufferRecorder = recorder
             let buffer = timeshift.buffer
-            let startOffset = timeshift.playbackOffset ?? buffer.end
+            let startOffset = timeshift.recordingStartOffset
             let limit = Int64(limitMB) * 1_048_576
             let name = channel.name
             status = "Registrazione dal buffer di \(name)…"
