@@ -29,7 +29,7 @@ struct HelpView: View {
             Entry(title: "±30 secondi e Diretta",
                   text: "In replay e registrazioni spostano la riproduzione. In diretta, sui canali con archivio, -30 s passa alla differita dall'archivio; \"Diretta\" riporta al live."),
             Entry(title: "Schermo intero",
-                  text: "Su iPhone basta ruotare il telefono in orizzontale; tornando in verticale si esce. C'e' anche il pulsante in alto a destra sul video."),
+                  text: "Su iPhone ruota il telefono in orizzontale per lo schermo intero. Il pulsante in alto a destra esce e mostra video e programmi affiancati; tornando in verticale si torna alla vista normale."),
             Entry(title: "Informazioni sul flusso",
                   text: "Tocca il video: insieme ai controlli compaiono risoluzione, fotogrammi al secondo, codec e audio.")
         ]),

@@ -107,39 +107,62 @@ struct PlayerScreen: View {
 
     // MARK: Layout normale
 
+    private var videoWithButton: some View {
+        videoSurface
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .overlay(alignment: .topTrailing) {
+                Button { setFullscreen(true) } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .padding(8).background(.black.opacity(0.55), in: Circle()).foregroundStyle(.white)
+                }.padding(8)
+            }
+    }
+
+    @ViewBuilder private var programList: some View {
+        if request.channel != nil {
+            List(visiblePrograms) { program in
+                Button { select(program) } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(program.start.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(program.title).foregroundStyle(.primary)
+                        }
+                        Spacer()
+                        if program.isLive { Text("Ora").font(.caption).foregroundStyle(.red) }
+                        else if let channel = request.channel, model.canReplay(program, channel: channel) {
+                            Image(systemName: "play.circle").foregroundStyle(.tint)
+                        }
+                    }
+                }
+            }.listStyle(.plain)
+        } else {
+            Spacer()
+        }
+    }
+
     private var normalBody: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                videoSurface
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                    .overlay(alignment: .topTrailing) {
-                        Button { setFullscreen(true) } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .padding(8).background(.black.opacity(0.55), in: Circle()).foregroundStyle(.white)
-                        }.padding(8)
-                    }
-
-                controls.padding(.horizontal).padding(.top, 8)
-
-                if request.channel != nil {
-                    List(visiblePrograms) { program in
-                        Button { select(program) } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(program.start.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    Text(program.title).foregroundStyle(.primary)
-                                }
-                                Spacer()
-                                if program.isLive { Text("Ora").font(.caption).foregroundStyle(.red) }
-                                else if let channel = request.channel, model.canReplay(program, channel: channel) {
-                                    Image(systemName: "play.circle").foregroundStyle(.tint)
-                                }
+            GeometryReader { geometry in
+                if geometry.size.width > geometry.size.height {
+                    // Orizzontale non a schermo intero: video e controlli a sinistra, programmi a destra.
+                    HStack(spacing: 0) {
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                videoWithButton
+                                controls.padding(.horizontal).padding(.top, 8)
                             }
                         }
-                    }.listStyle(.plain)
+                        .frame(width: geometry.size.width * 0.6)
+                        Divider()
+                        programList
+                    }
                 } else {
-                    Spacer()
+                    VStack(spacing: 0) {
+                        videoWithButton
+                        controls.padding(.horizontal).padding(.top, 8)
+                        programList
+                    }
                 }
             }
             .navigationTitle(request.title)
@@ -192,8 +215,9 @@ struct PlayerScreen: View {
     private func setFullscreen(_ on: Bool) {
         fullscreen = on
         showOverlay(true)
-        // Su iPhone l'uscita riporta in verticale, altrimenti la rotazione automatica rientrerebbe subito.
-        requestOrientation(on ? .landscape : (isPhone ? .portrait : .allButUpsideDown))
+        // Entrando si passa in orizzontale; uscendo si resta nell'orientamento attuale:
+        // in orizzontale compare la vista affiancata (video + programmi), in verticale quella normale.
+        if on { requestOrientation(.landscape) }
     }
 
     /// iPhone: telefono in orizzontale = schermo intero, di nuovo in verticale = vista normale.
