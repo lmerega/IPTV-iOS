@@ -4,9 +4,10 @@ struct GuideView: View {
     @EnvironmentObject private var model: AppModel
     @State private var search = ""
     @SceneStorage("guide.onlyReplay") private var onlyReplay = true
+    @SceneStorage("guide.grid") private var gridMode = false
 
     private var filtered: [IPTVChannel] {
-        model.channels.filter { channel in
+        model.visibleChannels.filter { channel in
             (!onlyReplay || channel.archive)
                 && (search.isEmpty || channel.name.localizedCaseInsensitiveContains(search))
         }
@@ -14,22 +15,36 @@ struct GuideView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    ForEach(filtered) { channel in
-                        NavigationLink(value: channel) { ChannelRow(channel: channel) }
+            Group {
+                if gridMode {
+                    GuideGridView(channels: filtered)
+                } else {
+                    List {
+                        Section {
+                            ForEach(filtered) { channel in
+                                NavigationLink(value: channel) { ChannelRow(channel: channel) }
+                            }
+                        } header: {
+                            Text(onlyReplay
+                                 ? "\(filtered.count) canali con replay (di \(model.channels.count))"
+                                 : "\(filtered.count) canali")
+                        }
                     }
-                } header: {
-                    Text(onlyReplay
-                         ? "\(filtered.count) canali con replay (di \(model.channels.count))"
-                         : "\(filtered.count) canali")
+                    .listStyle(.plain)
                 }
             }
-            .listStyle(.plain)
-            .navigationTitle("Catch-up")
+            .navigationTitle("Guida")
             .navigationDestination(for: IPTVChannel.self) { ChannelGuideView(channel: $0) }
             .searchable(text: $search, prompt: "Cerca un canale")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Picker("Vista", selection: $gridMode) {
+                        Image(systemName: "list.bullet").tag(false)
+                        Image(systemName: "square.grid.3x1.below.line.grid.1x2").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityLabel("Vista elenco o griglia")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Picker("Filtro", selection: $onlyReplay) {
@@ -53,6 +68,7 @@ struct GuideView: View {
 
 struct ChannelGuideView: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var scheduler = RecordingScheduler.shared
     let channel: IPTVChannel
     @State private var programs: [GuideProgram] = []
     @State private var loading = true
@@ -69,6 +85,12 @@ struct ChannelGuideView: View {
                     Section(day.formatted(.dateTime.weekday(.wide).day().month())) {
                         ForEach(items) { program in
                             Button { open(program) } label: { row(program) }.id(program.id)
+                                .swipeActions {
+                                    if program.end > Date() { scheduleButton(program) }
+                                }
+                                .contextMenu {
+                                    if program.end > Date() { scheduleButton(program) }
+                                }
                         }
                     }
                 }
@@ -102,11 +124,29 @@ struct ChannelGuideView: View {
                 Text(program.title).foregroundStyle(.primary)
             }
             Spacer()
+            if scheduler.isScheduled(program, channel: channel) {
+                Image(systemName: "record.circle.fill").foregroundStyle(.red)
+            }
             if program.isLive {
                 Label("Ora", systemImage: "dot.radiowaves.left.and.right").font(.caption).foregroundStyle(.red)
             } else if model.canReplay(program, channel: channel) {
                 Image(systemName: "play.circle").foregroundStyle(.tint)
             }
+        }
+    }
+
+    @ViewBuilder private func scheduleButton(_ program: GuideProgram) -> some View {
+        if scheduler.isScheduled(program, channel: channel) {
+            Button("Annulla registrazione", systemImage: "xmark.circle", role: .destructive) {
+                if let item = scheduler.items.first(where: { $0.channelID == channel.id && $0.start == program.start }) {
+                    scheduler.cancel(item)
+                }
+            }
+        } else {
+            Button("Programma registrazione", systemImage: "record.circle") {
+                scheduler.schedule(program, channel: channel)
+            }
+            .tint(.red)
         }
     }
 

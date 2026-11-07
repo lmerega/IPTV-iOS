@@ -358,6 +358,7 @@ private enum RecorderError: LocalizedError {
 
 struct RecordingsView: View {
     @ObservedObject private var dvr = DVRManager.shared
+    @ObservedObject private var scheduler = RecordingScheduler.shared
     @EnvironmentObject private var model: AppModel
 
     /// Data · durata reale · dimensione.
@@ -401,6 +402,24 @@ struct RecordingsView: View {
                     }
                     Text("La registrazione in corso compare qui sopra: puoi tornare al canale, guardarla dall'inizio mentre registra e impostare un timer di stop. Continua anche chiudendo il video, finche' l'app resta aperta in primo piano: se esci dall'app o blocchi il telefono, iOS la sospende dopo pochi secondi. Con il timeshift attivo copia i dati dal buffer senza aprire altre connessioni e si ferma cambiando canale.")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                if !scheduler.items.isEmpty {
+                    Section {
+                        ForEach(scheduler.items) { item in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title).lineLimit(2)
+                                Text("\(item.channelName) · \(item.start.formatted(date: .abbreviated, time: .shortened)) – \(item.end.formatted(date: .omitted, time: .shortened))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .onDelete { indexes in
+                            for index in indexes { scheduler.cancel(scheduler.items[index]) }
+                        }
+                    } header: {
+                        Text("Programmate")
+                    } footer: {
+                        Text("All'ora di inizio arriva una notifica: l'app deve essere aperta (o va aperta prima della fine del programma) perche' la registrazione parta. iOS non permette di avviarla da sola in background.")
+                    }
                 }
                 Section("Registrazioni salvate") {
                     if dvr.files.isEmpty {

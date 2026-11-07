@@ -195,6 +195,36 @@ final class ParserTests: XCTestCase {
         try? FileManager.default.removeItem(at: APICache.file(for: url))
     }
 
+    func testHiddenCategoriesAndMediaTitle() {
+        func item(_ id: Int, _ category: String) -> OnDemandItem {
+            OnDemandItem(id: "movie-\(id)", title: "Titolo \(id)", category: category, cover: nil, url: nil,
+                         seriesID: nil, added: Double(id))
+        }
+        let catalog = OnDemandCatalog([item(1, "Italia"), item(2, "Estero"), item(3, "Italia")])
+        XCTAssertEqual(catalog.filter(category: OnDemandCatalog.all, query: "", hidden: ["Estero"]).count, 2)
+        XCTAssertEqual(catalog.filter(category: OnDemandCatalog.recent, query: "", hidden: ["Italia"]).map(\.id), ["movie-2"])
+        let url = URL(string: "http://example.invalid/series/1.mp4")!
+        let episode = MediaRef(id: "episode-1", kind: "episode", title: "Pilota", cover: nil, url: url,
+                               seriesID: 7, seriesTitle: "Serie", season: 2, episode: 5)
+        XCTAssertEqual(episode.displayTitle, "Serie · S2 E5")
+        XCTAssertEqual(Expiry.daysLeft(Date().addingTimeInterval(3 * 86400 + 60)), 3)
+        XCTAssertNil(Expiry.daysLeft(nil))
+    }
+
+    @MainActor
+    func testWatchHistoryResumeAndFinish() {
+        let history = WatchHistory.shared
+        history.use(profile: UUID())
+        let url = URL(string: "http://example.invalid/movie/1.mp4")!
+        let movie = MediaRef(id: "movie-test", kind: "movie", title: "Film", cover: nil, url: url)
+        history.record(movie, position: 600, duration: 6000)
+        XCTAssertEqual(history.resumePosition("movie-test"), 600)
+        XCTAssertEqual(history.continueWatching(kind: "movie").map(\.id), ["movie-test"])
+        history.record(movie, position: 5900, duration: 6000)
+        XCTAssertNil(history.resumePosition("movie-test"))
+        XCTAssertTrue(history.watched.contains("movie-test"))
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

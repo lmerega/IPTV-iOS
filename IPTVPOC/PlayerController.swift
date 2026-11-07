@@ -42,6 +42,12 @@ final class PlayerController: ObservableObject {
     private var stalledTicks = 0
     private var loadDate = Date()
     private var restartCount = 0
+    /// Contenuto on demand in riproduzione (per salvare il punto raggiunto).
+    var media: MediaRef?
+    private var lastProgressSave = Date.distantPast
+    /// Il film/episodio e' arrivato alla fine (per il prossimo episodio).
+    @Published var finished = false
+    private var endObserver: NSObjectProtocol?
     var currentURL: URL?
     private var lastInfoUpdate = Date.distantPast
     @Published var logLines: [String] = []
@@ -105,7 +111,10 @@ final class PlayerController: ObservableObject {
             if self.lastStateText == text { return }
             self.lastStateText = text
             self.log(text)
-            if text.hasSuffix("fine flusso") { self.log("Fine a \(Self.clock(self.currentTime)) (posizione \(Int(self.vlc.position * 100))%)") }
+            if text.hasSuffix("fine flusso") {
+                self.log("Fine a \(Self.clock(self.currentTime)) (posizione \(Int(self.vlc.position * 100))%)")
+                self.contentEnded()
+            }
         }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.heartbeatTick() }
@@ -151,6 +160,45 @@ final class PlayerController: ObservableObject {
         if tsActive && heartbeatCount % 10 == 0 {
             let timeshift = TimeshiftManager.shared
             log("Buffer: \(timeshift.buffer.end / 1_048_576) MB, \(timeshift.bufferedMinutes) min, indietro \(Int(tsBehind)) s")
+        }
+    }
+
+    /// Durata nota del contenuto in riproduzione (VLC o AVPlayer).
+    var mediaDuration: Double {
+        if engine == .avplayer {
+            let seconds = player.currentItem?.duration.seconds ?? 0
+            return seconds.isFinite ? seconds : 0
+        }
+        return duration
+    }
+
+    /// Salva il punto raggiunto del film/episodio (ogni 10 secondi e alla chiusura).
+    func saveProgress(force: Bool = false) {
+        guard let media, !isLive, !tsActive, catchupProgram == nil else { return }
+        guard force || Date().timeIntervalSince(lastProgressSave) > 10 else { return }
+        lastProgressSave = Date()
+        WatchHistory.shared.record(media, position: currentTime, duration: mediaDuration)
+    }
+
+    private func contentEnded() {
+        guard !isLive, !tsActive, catchupProgram == nil, !finished else { return }
+        if let media { WatchHistory.shared.markWatched(media.id) }
+        finished = true
+    }
+
+    /// Riprende da `seconds`: subito se il player e' partito, altrimenti appena parte.
+    func resume(at seconds: Double) {
+        log("Riprendo da \(Self.clock(seconds))")
+        if engine == .avplayer {
+            if player.currentItem?.status == .readyToPlay {
+                player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+            } else {
+                pendingSeek = seconds
+            }
+        } else if vlc.isPlaying {
+            seekMedia(to: seconds)
+        } else {
+            pendingSeek = seconds
         }
     }
 
@@ -221,6 +269,7 @@ final class PlayerController: ObservableObject {
             streamInfo = engine == .vlc ? vlc.streamSummary() : avPlayerSummary()
             refreshTracks()
         }
+        if media != nil { saveProgress() }
         if engine == .vlc, let known = knownDuration, known > 0, !tsActive, catchupProgram == nil {
             duration = known
             currentTime = vlc.position * known
@@ -340,6 +389,11 @@ final class PlayerController: ObservableObject {
         }
         vlc.stop()
         let item = AVPlayerItem(url: url)
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item,
+                                                             queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.contentEnded() }
+        }
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
             let text = item.error?.localizedDescription
@@ -356,6 +410,10 @@ final class PlayerController: ObservableObject {
             isBuffering = false
             message = nil
             if let item = player.currentItem { Task { await loadAVTracks(item) } }
+            if let target = pendingSeek {
+                pendingSeek = nil
+                player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+            }
         case .failed:
             log("AVPlayer: errore \(text ?? "")")
             if let fallback = fallbackURL {
@@ -551,6 +609,8 @@ final class PlayerController: ObservableObject {
     }
 
     func stop() {
+        saveProgress(force: true)
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         generation += 1
         player.pause()
         player.replaceCurrentItem(with: nil)

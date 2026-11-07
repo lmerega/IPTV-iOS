@@ -45,14 +45,16 @@ struct OnDemandCatalog {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 
-    func filter(category: String, query: String) -> [OnDemandItem] {
+    /// `hidden`: categorie nascoste dall'utente, escluse da "Tutte", "Aggiunti di recente" e ricerca.
+    func filter(category: String, query: String, hidden: Set<String> = []) -> [OnDemandItem] {
         let needle = Self.key(query.trimmingCharacters(in: .whitespaces))
-        let pool: [Int]
+        var pool: [Int]
         switch category {
         case Self.recent: pool = recentIndexes
         case Self.all: pool = Array(items.indices)
         default: pool = items.indices.filter { items[$0].category == category }
         }
+        if !hidden.isEmpty { pool = pool.filter { !hidden.contains(items[$0].category) } }
         if needle.isEmpty { return pool.map { items[$0] } }
         return pool.filter { keys[$0].contains(needle) }.map { items[$0] }
     }
@@ -64,17 +66,95 @@ struct OnDemandCatalog {
 final class OnDemandStore {
     static let shared = OnDemandStore()
     private var catalogs: [String: OnDemandCatalog] = [:]
+    private var loading: [String: Task<OnDemandCatalog, Error>] = [:]
     /// Ultimo elenco mostrato per scheda: tornando sulla scheda compare subito, senza griglia vuota.
     private var lastShown: [String: (key: String, items: [OnDemandItem])] = [:]
+
+    static func kindKey(_ kind: OnDemandKind) -> String { kind == .movies ? "movies" : "series" }
+
+    static func key(kind: OnDemandKind, sourceID: String, revision: Int) -> String {
+        "\(kindKey(kind))|\(sourceID)|\(revision)"
+    }
 
     func shown(kind: String) -> (key: String, items: [OnDemandItem])? { lastShown[kind] }
     func setShown(_ items: [OnDemandItem], key: String, kind: String) { lastShown[kind] = (key, items) }
 
     func catalog(_ key: String) -> OnDemandCatalog? { catalogs[key] }
 
-    func store(_ catalog: OnDemandCatalog, key: String, kind: String) {
-        catalogs = catalogs.filter { !$0.key.hasPrefix(kind + "|") }
+    /// Catalogo dalla memoria, oppure caricato (cache su disco o rete) una sola volta anche se richiesto
+    /// insieme dalla scheda e dal precaricamento all'avvio.
+    func load(key: String, kind: OnDemandKind, source: IPTVSource) async throws -> OnDemandCatalog {
+        if let saved = catalogs[key] { return saved }
+        if let running = loading[key] { return try await running.value }
+        let task = Task<OnDemandCatalog, Error> {
+            let list = kind == .movies ? try await IPTVExtras.movies(source) : try await IPTVExtras.series(source)
+            return await Task.detached(priority: .userInitiated) { OnDemandCatalog(list) }.value
+        }
+        loading[key] = task
+        defer { loading[key] = nil }
+        let catalog = try await task.value
+        let prefix = Self.kindKey(kind) + "|"
+        catalogs = catalogs.filter { !$0.key.hasPrefix(prefix) }
         catalogs[key] = catalog
+        return catalog
+    }
+
+    /// Titoli cercati in tutti i cataloghi gia' in memoria (ricerca globale).
+    func search(_ query: String, hiddenMovies: Set<String>, hiddenSeries: Set<String>) -> (movies: [OnDemandItem], series: [OnDemandItem]) {
+        var movies: [OnDemandItem] = []
+        var series: [OnDemandItem] = []
+        for (key, catalog) in catalogs {
+            if key.hasPrefix("movies|") {
+                movies = catalog.filter(category: OnDemandCatalog.all, query: query, hidden: hiddenMovies)
+            } else if key.hasPrefix("series|") {
+                series = catalog.filter(category: OnDemandCatalog.all, query: query, hidden: hiddenSeries)
+            }
+        }
+        return (movies, series)
+    }
+}
+
+/// Riga orizzontale "Continua a guardare" (film o episodi lasciati a meta').
+struct ContinueWatchingRow: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject private var history = WatchHistory.shared
+    let kind: String
+
+    var body: some View {
+        let entries = history.continueWatching(kind: kind)
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Continua a guardare").font(.headline).padding(.horizontal)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 12) {
+                        ForEach(entries) { entry in
+                            Button {
+                                model.playing = PlayRequest(title: entry.media.displayTitle, url: entry.media.url,
+                                                            media: entry.media)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    RemoteImage(url: URL(string: entry.media.cover ?? ""))
+                                        .frame(width: 150, height: 86).clipped()
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        .overlay(alignment: .bottom) {
+                                            ProgressView(value: entry.fraction).tint(.red).padding(6)
+                                        }
+                                    Text(entry.media.displayTitle).font(.caption).lineLimit(2)
+                                        .frame(width: 150, alignment: .leading)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Segna come visto", systemImage: "checkmark") { history.markWatched(entry.id) }
+                                Button("Rimuovi", systemImage: "xmark", role: .destructive) { history.remove(entry.id) }
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+            .padding(.top, 4)
+        }
     }
 }
 
@@ -98,16 +178,23 @@ struct OnDemandView: View {
     @State private var loadedKey = ""
     @State private var shownKey = ""
 
-    private var kindKey: String { kind == .movies ? "movies" : "series" }
-    private var storeKey: String { "\(kindKey)|\(model.selectedID?.uuidString ?? "")|\(model.catalogRevision)" }
+    private var kindKey: String { OnDemandStore.kindKey(kind) }
+    private var storeKey: String {
+        OnDemandStore.key(kind: kind, sourceID: model.selectedID?.uuidString ?? "", revision: model.catalogRevision)
+    }
+    private var hidden: Set<String> { kind == .movies ? model.hiddenMovies : model.hiddenSeries }
+    private var visibleCategories: [String] { catalog.categories.filter { !hidden.contains($0) } }
 
-    private var filterKey: String { "\(category)|\(query)|\(catalog.items.count)" }
+    private var filterKey: String {
+        "\(category)|\(query)|\(catalog.items.count)|\(hidden.sorted().joined(separator: ","))"
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
+                if query.isEmpty { ContinueWatchingRow(kind: kind == .movies ? "movie" : "episode") }
                 if !catalog.items.isEmpty {
-                    CategoryPicker(options: catalog.categories, selection: $category, counts: { catalog.counts })
+                    CategoryPicker(options: visibleCategories, selection: $category, counts: { catalog.counts })
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12, alignment: .top)],
                           alignment: .leading, spacing: 14) {
@@ -151,10 +238,11 @@ struct OnDemandView: View {
                 let key = filterKey
                 if key == shownKey { return }
                 let snapshot = catalog
-                let selected = snapshot.categories.contains(category) ? category : OnDemandCatalog.all
+                let selected = visibleCategories.contains(category) ? category : OnDemandCatalog.all
                 let text = query
+                let hiddenNow = hidden
                 let result = await Task.detached(priority: .userInitiated) {
-                    snapshot.filter(category: selected, query: text)
+                    snapshot.filter(category: selected, query: text, hidden: hiddenNow)
                 }.value
                 if !Task.isCancelled {
                     shown = result
@@ -170,6 +258,11 @@ struct OnDemandView: View {
             RemoteImage(url: URL(string: item.cover ?? ""))
                 .frame(height: 160).frame(maxWidth: .infinity).clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(alignment: .topTrailing) {
+                    if WatchHistory.shared.watched.contains(item.id) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, .green).padding(6)
+                    }
+                }
             // Altezza fissa del titolo: tutte le celle uguali, nessun vuoto tra le righe.
             Text(item.title).font(.caption).lineLimit(2).foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32, alignment: .topLeading)
@@ -178,7 +271,8 @@ struct OnDemandView: View {
 
     private func open(_ item: OnDemandItem) {
         if kind == .movies, let url = item.url {
-            model.playing = PlayRequest(title: item.title, url: url)
+            let media = MediaRef(id: item.id, kind: "movie", title: item.title, cover: item.cover, url: url)
+            model.playing = PlayRequest(title: item.title, url: url, media: media)
         }
     }
 
@@ -203,12 +297,10 @@ struct OnDemandView: View {
         loading = true
         defer { loading = false }
         do {
-            let list = kind == .movies ? try await IPTVExtras.movies(source) : try await IPTVExtras.series(source)
-            let prepared = await Task.detached(priority: .userInitiated) { OnDemandCatalog(list) }.value
+            let prepared = try await OnDemandStore.shared.load(key: key, kind: kind, source: source)
             guard !Task.isCancelled else { return }
             catalog = prepared
             loadedKey = key
-            OnDemandStore.shared.store(prepared, key: key, kind: kindKey)
         } catch {
             failure = (error as? IPTVError)?.errorDescription ?? IPTVService.describe(error)
         }
@@ -282,21 +374,38 @@ struct RemoteImage: View {
 
 struct SeriesDetailView: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var history = WatchHistory.shared
     let series: OnDemandItem
     @State private var episodes: [OnDemandItem] = []
     @State private var loading = true
 
+    private var seasons: [String] {
+        Array(Set(episodes.map(\.category))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     var body: some View {
         List {
-            ForEach(Array(Set(episodes.map(\.category))).sorted { $0.localizedStandardCompare($1) == .orderedAscending },
-                    id: \.self) { season in
+            if let next = nextToWatch {
+                Section {
+                    Button { play(next) } label: {
+                        Label(history.entries[next.id] != nil ? "Riprendi S\(next.season) E\(next.episode)"
+                                                              : "Guarda S\(next.season) E\(next.episode)",
+                              systemImage: "play.fill")
+                            .font(.headline)
+                    }
+                }
+            }
+            ForEach(seasons, id: \.self) { season in
                 Section(season) {
                     ForEach(episodes.filter { $0.category == season }) { episode in
-                        Button {
-                            if let url = episode.url { model.playing = PlayRequest(title: episode.title, url: url) }
-                        } label: {
-                            Label("\(episode.episode). \(episode.title)", systemImage: "play.circle")
-                        }
+                        Button { play(episode) } label: { row(episode) }
+                            .contextMenu {
+                                if history.watched.contains(episode.id) {
+                                    Button("Segna come non visto", systemImage: "circle") { unwatch(episode) }
+                                } else {
+                                    Button("Segna come visto", systemImage: "checkmark") { history.markWatched(episode.id) }
+                                }
+                            }
                     }
                 }
             }
@@ -313,5 +422,44 @@ struct SeriesDetailView: View {
             }
             loading = false
         }
+    }
+
+    @ViewBuilder private func row(_ episode: OnDemandItem) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: history.watched.contains(episode.id) ? "checkmark.circle.fill" : "play.circle")
+                .foregroundStyle(history.watched.contains(episode.id) ? Color.green : Color.accentColor)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(episode.episode). \(episode.title)").foregroundStyle(.primary)
+                if let entry = history.entries[episode.id] {
+                    ProgressView(value: entry.fraction).tint(.red)
+                }
+            }
+        }
+    }
+
+    /// Primo episodio lasciato a meta', altrimenti il primo non visto dopo l'ultimo visto.
+    private var nextToWatch: OnDemandItem? {
+        if let started = episodes.first(where: { history.entries[$0.id] != nil }) { return started }
+        guard let lastWatched = episodes.lastIndex(where: { history.watched.contains($0.id) }) else { return nil }
+        return episodes.indices.contains(lastWatched + 1) ? episodes[lastWatched + 1] : nil
+    }
+
+    private func unwatch(_ episode: OnDemandItem) {
+        history.unmarkWatched(episode.id)
+    }
+
+    private func request(_ episode: OnDemandItem) -> PlayRequest? {
+        guard let url = episode.url else { return nil }
+        let media = MediaRef(id: episode.id, kind: "episode", title: episode.title, cover: series.cover, url: url,
+                             seriesID: series.seriesID, seriesTitle: series.title,
+                             season: episode.season, episode: episode.episode)
+        return PlayRequest(title: media.displayTitle, url: url, media: media)
+    }
+
+    /// Avvia l'episodio con in coda i successivi, per la riproduzione automatica.
+    private func play(_ episode: OnDemandItem) {
+        guard var first = request(episode), let index = episodes.firstIndex(of: episode) else { return }
+        first.next = episodes.suffix(from: index + 1).prefix(30).compactMap { request($0) }
+        model.playing = first
     }
 }

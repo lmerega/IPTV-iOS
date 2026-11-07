@@ -30,10 +30,36 @@ struct HelpView: View {
                   text: "Riporta al momento attuale della trasmissione dopo una pausa o un salto indietro."),
             Entry(title: "Pulsante Registra / Stop",
                   text: "Avvia e ferma la registrazione del canale che stai guardando (vedi Registrazioni)."),
+            Entry(title: "Zapping",
+                  text: "Scorri verso l'alto sul video per il canale successivo, verso il basso per il precedente, nell'elenco da cui sei partito (categoria, preferiti, recenti o ricerca). Il pulsante con la freccia curva torna al canale guardato prima."),
             Entry(title: "Icona stetoscopio",
                   text: "Apre la diagnostica: il registro di cosa sta facendo il player e il test dei formati di replay. \"Copia log\" copia il registro per inviarlo.")
         ]),
+        ("Canali: preferiti, recenti, categorie", [
+            Entry(title: "Preferiti",
+                  text: "Scorri un canale verso sinistra o tienilo premuto per aggiungerlo ai preferiti. Nella categoria Preferiti tocca Modifica per riordinarli trascinando."),
+            Entry(title: "Recenti",
+                  text: "La categoria Recenti mostra gli ultimi 20 canali guardati. \"Svuota\" la azzera."),
+            Entry(title: "Categorie nascoste",
+                  text: "Impostazioni → Categorie nascoste: spegni le categorie di canali, film o serie che non usi (per esempio i paesi esteri). Spariscono da elenchi, ricerca e zapping; puoi riaccenderle quando vuoi.")
+        ]),
+        ("Ricerca", [
+            Entry(title: "Cerca ovunque",
+                  text: "La scheda Cerca (lente) cerca insieme canali, programmi in onda e a seguire, film e serie. Ignora maiuscole e accenti. La prima ricerca di film e serie puo' richiedere qualche secondo per preparare i cataloghi.")
+        ]),
+        ("Guida programmi", [
+            Entry(title: "Elenco o griglia",
+                  text: "Nella scheda Guida il selettore in alto a sinistra alterna l'elenco dei canali e la griglia stile decoder: canali in verticale, orari in orizzontale, linea rossa sull'ora attuale. Scorri in tutte le direzioni."),
+            Entry(title: "Toccare un programma",
+                  text: "In onda: guardalo in diretta. Gia' trasmesso con replay: guardalo dall'inizio. Futuro: programma la registrazione."),
+            Entry(title: "Registrazioni programmate",
+                  text: "Dalla griglia o scorrendo un programma futuro nella guida del canale scegli \"Programma registrazione\". All'ora di inizio arriva una notifica: se l'app e' aperta la registrazione parte da sola (1 minuto prima, fino a 3 minuti dopo la fine). iOS non permette di avviarla con l'app chiusa: in quel caso aprila dalla notifica. Le programmate sono nella scheda Registrazioni, scorri per annullarle.")
+        ]),
         ("Film e serie", [
+            Entry(title: "Riprendi e Continua a guardare",
+                  text: "L'app ricorda dove hai interrotto film ed episodi: riaprendoli compare \"Riprendi da…\". In cima a Film e Serie la riga \"Continua a guardare\" mostra quelli lasciati a meta'; tienili premuti per segnarli come visti o toglierli."),
+            Entry(title: "Prossimo episodio",
+                  text: "A fine episodio parte un conto alla rovescia di 10 secondi per il successivo: \"Riproduci ora\" o \"Annulla\". Gli episodi visti hanno il segno verde; nella serie il primo pulsante riprende da dove eri."),
             Entry(title: "Aggiunti di recente",
                   text: "La prima voce dopo \"Tutte\" mostra gli ultimi 200 titoli inseriti dal provider, dal piu' nuovo."),
             Entry(title: "Ricerca",
@@ -59,7 +85,7 @@ struct HelpView: View {
         ]),
         ("Replay (catch-up): rivedere programmi passati", [
             Entry(title: "Come si usa",
-                  text: "Scheda Catch-up → scegli un canale → tocca un programma gia' andato in onda. Nel player usi pausa, ±30 secondi e la barra come per un film."),
+                  text: "Scheda Guida → scegli un canale (o usa la griglia) → tocca un programma gia' andato in onda. Nel player usi pausa, ±30 secondi e la barra come per un film."),
             Entry(title: "Filtro canali",
                   text: "\"Solo canali con replay\" mostra solo i canali di cui il provider conserva le puntate. \"Tutti i canali\" mostra anche quelli con la sola guida, senza replay."),
             Entry(title: "Impostazioni → Formato",
@@ -108,6 +134,10 @@ struct HelpView: View {
                   text: "Solo per M3U: prova la versione .m3u8 dei canali e torna al .ts se non funziona."),
             Entry(title: "URL EPG XMLTV",
                   text: "Solo per M3U: l'indirizzo della guida programmi. Accetta anche file compressi .gz.")
+        ]),
+        ("Scadenze", [
+            Entry(title: "Avvisi",
+                  text: "Una striscia gialla in Live avvisa quando l'installazione dell'app scade entro 2 giorni (rinnovala con Sideloadly) o l'abbonamento IPTV entro 7. Arrivano anche notifiche: il giorno prima per l'app, 3 giorni prima per l'abbonamento. Le date sono in Impostazioni.")
         ]),
         ("Problemi comuni", [
             Entry(title: "Il canale non parte o resta a caricare",

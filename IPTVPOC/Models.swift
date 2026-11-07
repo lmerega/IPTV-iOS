@@ -145,6 +145,12 @@ struct PlayRequest: Identifiable {
     var knownDuration: Double? = nil
     /// Apre il canale e riparte dall'inizio della registrazione in corso (dal buffer timeshift).
     var fromRecordingStart = false
+    /// Film o episodio: serve per "Riprendi" e "Continua a guardare".
+    var media: MediaRef? = nil
+    /// Episodi successivi della serie, per la riproduzione automatica.
+    var next: [PlayRequest] = []
+    /// Zapping: il nuovo canale si apre gia' a schermo intero se lo era il precedente.
+    var startFullscreen = false
 }
 
 enum IPTVError: LocalizedError {

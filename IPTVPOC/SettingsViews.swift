@@ -79,7 +79,7 @@ struct SettingsView: View {
                     Section("Account") {
                         LabeledContent("Stato", value: account.status.isEmpty ? "-" : account.status)
                         if let expiry = account.expiry {
-                            LabeledContent("Scadenza", value: expiry.formatted(date: .abbreviated, time: .omitted))
+                            LabeledContent("Scadenza abbonamento", value: expiry.formatted(date: .abbreviated, time: .omitted))
                         }
                         if let max = account.maxConnections { LabeledContent("Connessioni massime", value: String(max)) }
                     }
@@ -196,11 +196,26 @@ struct SettingsView: View {
                     .onAppear { cacheBytes = APICache.totalBytes }
                 }
 
+                if model.current != nil {
+                    Section {
+                        NavigationLink { HiddenCategoriesView() } label: {
+                            LabeledContent {
+                                Text("\(model.hiddenLive.count + model.hiddenMovies.count + model.hiddenSeries.count)")
+                            } label: {
+                                Label("Categorie nascoste", systemImage: "eye.slash")
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     NavigationLink { HelpView() } label: { Label("Guida alle opzioni", systemImage: "questionmark.circle") }
                 }
 
                 Section("Informazioni") {
+                    if let signing = Expiry.signingDate {
+                        LabeledContent("Installazione valida fino al", value: signing.formatted(date: .abbreviated, time: .shortened))
+                    }
                     LabeledContent("Versione", value: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
                         .contentShape(Rectangle())
                         .onLongPressGesture(minimumDuration: 1.2) { showKeyEditor = true }

@@ -2,18 +2,24 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView {
             Tab("Live", systemImage: "antenna.radiowaves.left.and.right") { LiveView() }
-            Tab("Catch-up", systemImage: "clock.arrow.circlepath") { GuideView() }
+            Tab("Guida", systemImage: "clock.arrow.circlepath") { GuideView() }
             Tab("Film", systemImage: "film") { OnDemandView(kind: .movies) }
             Tab("Serie", systemImage: "tv") { OnDemandView(kind: .series) }
             Tab("Registrazioni", systemImage: "record.circle") { RecordingsView() }
             Tab("Impostazioni", systemImage: "gearshape") { SettingsView() }
+            Tab("Cerca", systemImage: "magnifyingglass", role: .search) { GlobalSearchView() }
         }
         .tabViewStyle(.sidebarAdaptable)
         .environmentObject(model)
+        .onChange(of: scenePhase) { _, phase in
+            // Al ritorno in primo piano: parte un'eventuale registrazione programmata.
+            if phase == .active { RecordingScheduler.shared.check() }
+        }
         .fullScreenCover(item: $model.playing) { request in
             PlayerScreen(request: request).environmentObject(model)
         }
@@ -88,17 +94,36 @@ struct LiveView: View {
     private var groups: [String] {
         var list = ["Tutti"]
         if !model.favorites.isEmpty { list.append("Preferiti") }
-        list.append(contentsOf: Set(model.channels.map(\.group)).sorted())
+        if !model.recents.isEmpty { list.append("Recenti") }
+        list.append(contentsOf: Set(model.visibleChannels.map(\.group)).sorted())
         return list
     }
 
+    private var activeGroup: String { groups.contains(group) ? group : "Tutti" }
+
     private var filtered: [IPTVChannel] {
-        let active = groups.contains(group) ? group : "Tutti"
-        return model.channels.filter { channel in
-            let inGroup = active == "Tutti"
-                || (active == "Preferiti" ? model.favorites.contains(channel.id) : channel.group == active)
-            return inGroup && (search.isEmpty || channel.name.localizedCaseInsensitiveContains(search))
+        let base: [IPTVChannel]
+        switch activeGroup {
+        case "Preferiti": base = model.orderedFavorites
+        case "Recenti": base = model.recentChannels
+        case "Tutti": base = model.visibleChannels
+        default: base = model.visibleChannels.filter { $0.group == activeGroup }
         }
+        guard !search.isEmpty else { return base }
+        return base.filter { $0.name.localizedCaseInsensitiveContains(search) }
+    }
+
+    /// I preferiti si riordinano trascinando, solo senza ricerca attiva.
+    private var canReorder: Bool { activeGroup == "Preferiti" && search.isEmpty }
+
+    private var moveAction: ((IndexSet, Int) -> Void)? {
+        guard canReorder else { return nil }
+        return { source, destination in model.moveFavorites(from: source, to: destination) }
+    }
+
+    private func open(_ channel: IPTVChannel, in list: [IPTVChannel]) {
+        model.zapList = list.map(\.id)
+        model.play(channel)
     }
 
     var body: some View {
@@ -125,33 +150,51 @@ struct LiveView: View {
                 } else {
                     VStack(spacing: 0) {
                         CategoryPicker(options: groups, selection: $group, counts: {
-                            var map = Dictionary(model.channels.map { ($0.group, 1) }, uniquingKeysWith: +)
-                            map["Tutti"] = model.channels.count
-                            map["Preferiti"] = model.favorites.count
+                            var map = Dictionary(model.visibleChannels.map { ($0.group, 1) }, uniquingKeysWith: +)
+                            map["Tutti"] = model.visibleChannels.count
+                            map["Preferiti"] = model.orderedFavorites.count
+                            map["Recenti"] = model.recentChannels.count
                             return map
                         })
-                        List(filtered) { channel in
-                            Button { model.play(channel) } label: { ChannelRow(channel: channel) }
-                                .swipeActions {
-                                    Button { model.toggleFavorite(channel) } label: {
-                                        Label("Preferito", systemImage: "star")
-                                    }.tint(.yellow)
-                                }
-                                .contextMenu {
-                                    Button("Registra", systemImage: "record.circle") {
-                                        DVRManager.shared.start(channel: channel)
+                        let list = filtered
+                        List {
+                            ForEach(list) { channel in
+                                Button { open(channel, in: list) } label: { ChannelRow(channel: channel) }
+                                    .swipeActions {
+                                        Button { model.toggleFavorite(channel) } label: {
+                                            Label("Preferito", systemImage: "star")
+                                        }.tint(.yellow)
                                     }
-                                    Button(model.favorites.contains(channel.id) ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti",
-                                           systemImage: "star") { model.toggleFavorite(channel) }
-                                }
+                                    .contextMenu {
+                                        Button("Registra", systemImage: "record.circle") {
+                                            DVRManager.shared.start(channel: channel)
+                                        }
+                                        Button(model.favorites.contains(channel.id) ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti",
+                                               systemImage: "star") { model.toggleFavorite(channel) }
+                                    }
+                            }
+                            .onMove(perform: moveAction)
                         }.listStyle(.plain)
                     }
                 }
             }
             .navigationTitle(model.current?.displayName ?? "Live")
             .searchable(text: $search, prompt: "Cerca un canale")
-            .safeAreaInset(edge: .top) { RecordingBanner() }
+            .safeAreaInset(edge: .top) {
+                VStack(spacing: 0) {
+                    ExpiryBanner()
+                    RecordingBanner()
+                }
+            }
             .toolbar {
+                if canReorder {
+                    ToolbarItem(placement: .topBarLeading) { EditButton() }
+                }
+                if activeGroup == "Recenti" {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Svuota", role: .destructive) { model.clearRecents() }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refreshAll() } }
                         .disabled(model.isLoading || model.current == nil)

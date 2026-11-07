@@ -9,6 +9,18 @@ final class AppModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var favorites: Set<String> = []
+    /// Ordine dei preferiti (riordinabili nella categoria Preferiti).
+    @Published var favoriteOrder: [String] = []
+    /// Ultimi canali guardati, dal piu' recente.
+    @Published var recents: [String] = []
+    /// Categorie nascoste dall'utente: canali live, film, serie.
+    @Published var hiddenLive: Set<String> = []
+    @Published var hiddenMovies: Set<String> = []
+    @Published var hiddenSeries: Set<String> = []
+    /// Elenco da cui e' stato aperto l'ultimo canale (per lo zapping).
+    var zapList: [String] = []
+    /// Canale guardato prima di quello attuale.
+    @Published var previousChannelID: String?
     @Published var account: AccountInfo?
     @Published var nowNext: [String: [GuideProgram]] = [:]
     @Published var guideRevision = 0
@@ -31,6 +43,8 @@ final class AppModel: ObservableObject {
             selectedID = profiles.first?.id
         }
         loadFavorites()
+        WatchHistory.shared.use(profile: selectedID)
+        RecordingScheduler.shared.channelLookup = { [weak self] id in self?.channels.first { $0.id == id } }
         Task { await reload() }
     }
 
@@ -63,6 +77,7 @@ final class AppModel: ObservableObject {
         channels = []
         account = nil
         loadFavorites()
+        WatchHistory.shared.use(profile: selectedID)
         Task { await reload() }
     }
 
@@ -117,6 +132,7 @@ final class AppModel: ObservableObject {
         if source.kind == "xtream" {
             if let info = await IPTVService.accountInfo(source) {
                 account = info
+                Expiry.scheduleReminders(subscription: info.expiry)
                 if source.serverTimeZone.isEmpty, let zone = info.timezone, TimeZone(identifier: zone) != nil {
                     mutateCurrent { $0.serverTimeZone = zone }
                 }
@@ -126,6 +142,8 @@ final class AppModel: ObservableObject {
             ? (try? IPTVService.xtreamURL(source, path: "/xmltv.php", query: [
                 ("username", source.username), ("password", source.password)]).absoluteString) ?? ""
             : source.epgURL
+        if source.kind == "xtream" { preloadOnDemand(source) }
+        RecordingScheduler.shared.check()
         if source.kind == "m3u" && !epgAddress.isEmpty {
             let loaded = await IPTVExtras.loadXMLTV(epgAddress)
             guard generation == loadGeneration else { return }
@@ -167,36 +185,146 @@ final class AppModel: ObservableObject {
     /// Canale scelto mentre si registra un altro canale: serve conferma (cambiando canale la registrazione si ferma).
     @Published var pendingChannel: IPTVChannel?
 
-    func play(_ channel: IPTVChannel) {
+    private var pendingFullscreen = false
+    private var currentChannelID: String?
+
+    func play(_ channel: IPTVChannel, fullscreen: Bool = false) {
         let dvr = DVRManager.shared
         if dvr.isBufferRecording, let recording = dvr.recordingChannel, recording.id != channel.id {
             pendingChannel = channel
+            pendingFullscreen = fullscreen
             return
         }
-        playing = PlayRequest(title: channel.name, url: channel.url, channel: channel)
+        open(channel, fullscreen: fullscreen)
     }
 
     /// Conferma: cambia canale (la registrazione dal buffer si ferma).
     func confirmPendingChannel() {
         guard let channel = pendingChannel else { return }
         pendingChannel = nil
-        playing = PlayRequest(title: channel.name, url: channel.url, channel: channel)
+        open(channel, fullscreen: pendingFullscreen)
     }
+
+    private func open(_ channel: IPTVChannel, fullscreen: Bool) {
+        if let current = currentChannelID, current != channel.id { previousChannelID = current }
+        currentChannelID = channel.id
+        addRecent(channel)
+        playing = PlayRequest(title: channel.name, url: channel.url, channel: channel, startFullscreen: fullscreen)
+    }
+
+    /// Canale successivo/precedente nell'elenco da cui si e' partiti (categoria, preferiti, ricerca).
+    func neighbour(of channel: IPTVChannel, delta: Int) -> IPTVChannel? {
+        let list = zapList.contains(channel.id) ? zapList : visibleChannels.map(\.id)
+        guard !list.isEmpty, let index = list.firstIndex(of: channel.id) else { return nil }
+        let next = list[(index + delta + list.count) % list.count]
+        return channels.first { $0.id == next }
+    }
+
+    /// Torna al canale guardato prima.
+    func playPrevious(fullscreen: Bool = false) {
+        guard let id = previousChannelID, let channel = channels.first(where: { $0.id == id }) else { return }
+        play(channel, fullscreen: fullscreen)
+    }
+
+    /// Canali delle categorie non nascoste.
+    var visibleChannels: [IPTVChannel] { channels.filter { !hiddenLive.contains($0.group) } }
 
     func playReplay(_ channel: IPTVChannel, _ program: GuideProgram) {
         playing = PlayRequest(title: program.title, url: channel.url, channel: channel, program: program)
     }
 
-    // MARK: Preferiti
+    // MARK: Preferiti, recenti, categorie nascoste
+
+    private func key(_ name: String) -> String { name + "." + (selectedID?.uuidString ?? "") }
 
     private func loadFavorites() {
-        guard let id = selectedID else { favorites = []; return }
-        favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites." + id.uuidString) ?? [])
+        guard selectedID != nil else {
+            favorites = []; favoriteOrder = []; recents = []
+            hiddenLive = []; hiddenMovies = []; hiddenSeries = []
+            return
+        }
+        let defaults = UserDefaults.standard
+        favoriteOrder = defaults.stringArray(forKey: key("favorites")) ?? []
+        favorites = Set(favoriteOrder)
+        recents = defaults.stringArray(forKey: key("recents")) ?? []
+        hiddenLive = Set(defaults.stringArray(forKey: key("hidden.live")) ?? [])
+        hiddenMovies = Set(defaults.stringArray(forKey: key("hidden.movies")) ?? [])
+        hiddenSeries = Set(defaults.stringArray(forKey: key("hidden.series")) ?? [])
     }
 
     func toggleFavorite(_ channel: IPTVChannel) {
-        guard let id = selectedID else { return }
-        if favorites.contains(channel.id) { favorites.remove(channel.id) } else { favorites.insert(channel.id) }
-        UserDefaults.standard.set(Array(favorites), forKey: "favorites." + id.uuidString)
+        guard selectedID != nil else { return }
+        if favorites.contains(channel.id) {
+            favorites.remove(channel.id)
+            favoriteOrder.removeAll { $0 == channel.id }
+        } else {
+            favorites.insert(channel.id)
+            favoriteOrder.append(channel.id)
+        }
+        UserDefaults.standard.set(favoriteOrder, forKey: key("favorites"))
+    }
+
+    /// Riordina i preferiti (trascinamento nella categoria Preferiti).
+    func moveFavorites(from source: IndexSet, to destination: Int) {
+        favoriteOrder.move(fromOffsets: source, toOffset: destination)
+        UserDefaults.standard.set(favoriteOrder, forKey: key("favorites"))
+    }
+
+    /// Preferiti nell'ordine scelto (solo canali esistenti).
+    var orderedFavorites: [IPTVChannel] {
+        let byID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return favoriteOrder.compactMap { byID[$0] }
+    }
+
+    var recentChannels: [IPTVChannel] {
+        let byID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return recents.compactMap { byID[$0] }
+    }
+
+    private func addRecent(_ channel: IPTVChannel) {
+        recents.removeAll { $0 == channel.id }
+        recents.insert(channel.id, at: 0)
+        if recents.count > 20 { recents.removeLast(recents.count - 20) }
+        UserDefaults.standard.set(recents, forKey: key("recents"))
+    }
+
+    func clearRecents() {
+        recents = []
+        UserDefaults.standard.set(recents, forKey: key("recents"))
+    }
+
+    enum HiddenKind { case live, movies, series }
+
+    func hidden(_ kind: HiddenKind) -> Set<String> {
+        switch kind {
+        case .live: return hiddenLive
+        case .movies: return hiddenMovies
+        case .series: return hiddenSeries
+        }
+    }
+
+    func setHidden(_ name: String, _ hide: Bool, kind: HiddenKind) {
+        var set = hidden(kind)
+        if hide { set.insert(name) } else { set.remove(name) }
+        switch kind {
+        case .live: hiddenLive = set; UserDefaults.standard.set(Array(set), forKey: key("hidden.live"))
+        case .movies: hiddenMovies = set; UserDefaults.standard.set(Array(set), forKey: key("hidden.movies"))
+        case .series: hiddenSeries = set; UserDefaults.standard.set(Array(set), forKey: key("hidden.series"))
+        }
+    }
+
+    // MARK: Film e serie in anticipo
+
+    /// Prepara in background i cataloghi di film e serie (dalla cache), cosi' le schede si aprono subito.
+    private func preloadOnDemand(_ source: IPTVSource) {
+        let revision = catalogRevision
+        let sourceID = source.id.uuidString
+        Task(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            for kind in [OnDemandKind.movies, .series] {
+                let key = OnDemandStore.key(kind: kind, sourceID: sourceID, revision: revision)
+                _ = try? await OnDemandStore.shared.load(key: key, kind: kind, source: source)
+            }
+        }
     }
 }

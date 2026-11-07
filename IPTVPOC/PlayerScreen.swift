@@ -22,6 +22,8 @@ struct PlayerScreen: View {
     @State private var diagnosticTaps: [Date] = []
     @State private var tapToken = UUID()
     @State private var toast: String?
+    @State private var resumeOffer: Double?
+    @State private var nextCountdown: Int?
     @AppStorage("videoAspect") private var aspectRaw = VideoAspect.fit.rawValue
     private var aspect: VideoAspect { VideoAspect(rawValue: aspectRaw) ?? .fit }
 
@@ -54,6 +56,8 @@ struct PlayerScreen: View {
             handleRotation()
         }
         .onChange(of: aspectRaw, initial: true) { controller.vlc.aspect = aspect }
+        .onChange(of: controller.finished) { _, done in if done { startNextCountdown() } }
+        .overlay(alignment: .bottomTrailing) { resumeAndNextOverlay }
         .task { await start() }
         .onDisappear {
             controller.stop()
@@ -83,6 +87,7 @@ struct PlayerScreen: View {
             }
             if controller.engine == .vlc && !fullscreen {
                 Color.clear.contentShape(Rectangle()).onTapGesture { showOverlay(!overlayVisible) }
+                    .gesture(zapGesture)
             }
         }
         .overlay(alignment: .topLeading) {
@@ -183,6 +188,7 @@ struct PlayerScreen: View {
             videoSurface.ignoresSafeArea()
             Color.clear.contentShape(Rectangle())
                 .onTapGesture { showOverlay(!overlayVisible) }
+                .gesture(zapGesture)
             if overlayVisible {
                 VStack {
                     HStack {
@@ -213,6 +219,74 @@ struct PlayerScreen: View {
         }
         .statusBarHidden(true)
         .background(Color.black.ignoresSafeArea())
+    }
+
+    // MARK: Zapping
+
+    /// Scorri verso l'alto/il basso sul video per il canale successivo/precedente.
+    private var zapGesture: some Gesture {
+        DragGesture(minimumDistance: 40).onEnded { value in
+            guard request.channel != nil, abs(value.translation.height) > 70,
+                  abs(value.translation.height) > abs(value.translation.width) * 1.5 else { return }
+            zap(value.translation.height < 0 ? 1 : -1)
+        }
+    }
+
+    private func zap(_ delta: Int) {
+        guard let channel = request.channel, let target = model.neighbour(of: channel, delta: delta) else { return }
+        showToast(target.name)
+        model.play(target, fullscreen: fullscreen)
+    }
+
+    // MARK: Riprendi e prossimo episodio
+
+    @ViewBuilder private var resumeAndNextOverlay: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            if let position = resumeOffer {
+                HStack(spacing: 10) {
+                    Button { controller.resume(at: position); resumeOffer = nil } label: {
+                        Label("Riprendi da \(clock(position))", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("Dall'inizio") { resumeOffer = nil }.buttonStyle(.bordered)
+                }
+                .padding(10).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+            if let seconds = nextCountdown, let next = request.next.first {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Prossimo episodio tra \(seconds) s").font(.caption).foregroundStyle(.secondary)
+                    Text(next.media?.displayTitle ?? next.title).font(.subheadline.bold()).lineLimit(2)
+                    HStack {
+                        Button("Riproduci ora") { playNext() }.buttonStyle(.borderedProminent)
+                        Button("Annulla") { nextCountdown = nil }.buttonStyle(.bordered)
+                    }
+                }
+                .padding(12).frame(maxWidth: 320)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(fullscreen ? 40 : 16)
+    }
+
+    private func startNextCountdown() {
+        guard !request.next.isEmpty, nextCountdown == nil else { return }
+        nextCountdown = 10
+        Task {
+            while let value = nextCountdown, value > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let current = nextCountdown else { return }
+                nextCountdown = current - 1
+            }
+            if nextCountdown == 0 { playNext() }
+        }
+    }
+
+    private func playNext() {
+        guard var next = request.next.first else { return }
+        nextCountdown = nil
+        next.next = Array(request.next.dropFirst())
+        next.startFullscreen = fullscreen
+        model.playing = next
     }
 
     /// Formato del video: scelta ricordata per tutti i contenuti.
@@ -422,6 +496,13 @@ struct PlayerScreen: View {
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
                 }
+                if request.channel != nil, model.previousChannelID != nil, model.previousChannelID != request.channel?.id {
+                    Button { model.playPrevious(fullscreen: fullscreen) } label: {
+                        Label("Canale precedente", systemImage: "arrow.uturn.backward").labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .accessibilityLabel("Canale precedente")
+                }
                 Spacer(minLength: 0)
                 Text(controller.engine == .vlc ? "VLC" : "AVPlayer")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -472,6 +553,8 @@ struct PlayerScreen: View {
     private func start() async {
         controller.channel = request.channel
         controller.knownDuration = request.knownDuration
+        controller.media = request.media
+        if request.startFullscreen { fullscreen = true }
         controller.enginePreference = model.current?.engine ?? "auto"
         controller.sourceProvider = { model.current }
         controller.onVariantResolved = { model.setCatchupVariant($0) }
@@ -481,6 +564,14 @@ struct PlayerScreen: View {
             await controller.playCatchup(source: source, channel: channel, program: program, offset: 0)
         } else {
             controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
+        }
+        if let media = request.media, let position = WatchHistory.shared.resumePosition(media.id) {
+            resumeOffer = position
+            Task {
+                // L'offerta sparisce da sola: senza scelta si guarda dall'inizio.
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                resumeOffer = nil
+            }
         }
         if request.fromRecordingStart {
             // Aspetta che il timeshift sia pronto, poi riparte dall'inizio della registrazione.
