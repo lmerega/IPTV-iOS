@@ -88,7 +88,7 @@ struct OnDemandView: View {
         do {
             items = kind == .movies ? try await IPTVExtras.movies(source) : try await IPTVExtras.series(source)
         } catch {
-            failure = "Contenuti non disponibili"
+            failure = (error as? IPTVError)?.errorDescription ?? IPTVService.describe(error)
         }
     }
 }

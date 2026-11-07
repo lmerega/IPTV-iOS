@@ -97,6 +97,16 @@ enum CatchupResolver {
         return URL(string: template, relativeTo: channel.url)?.absoluteURL
     }
 
+    /// Cerca la sincronizzazione MPEG-TS (0x47 ogni 188 byte), anche se il flusso inizia a meta' pacchetto.
+    static func hasTSSync(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 188 * 3 else { return false }
+        for i in 0..<188 where i + 376 < bytes.count {
+            if bytes[i] == 0x47 && bytes[i + 188] == 0x47 && bytes[i + 376] == 0x47 { return true }
+        }
+        return false
+    }
+
     /// Scarica solo i primi byte di ogni formato candidato e verifica che sia video/HLS.
     static func probe(source: IPTVSource, channel: IPTVChannel, start: Date,
                       duration: TimeInterval) async -> [CatchupProbeResult] {
@@ -123,10 +133,23 @@ enum CatchupResolver {
                     if head.count >= 2048 { break }
                 }
                 let isHLS = String(decoding: head.prefix(32), as: UTF8.self).contains("#EXTM3U")
-                let isTS = head.first == 0x47
-                let ok = (http.statusCode == 200 || http.statusCode == 206) && (isHLS || isTS)
-                let detail = ok ? (isHLS ? "OK (HLS)" : "OK (MPEG-TS)")
+                let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+                let isTS = hasTSSync(head) || contentType.contains("mp2t")
+                var ok = (http.statusCode == 200 || http.statusCode == 206) && (isHLS || isTS)
+                var detail = ok ? (isHLS ? "OK (HLS)" : "OK (MPEG-TS)")
                     : "HTTP \(http.statusCode), contenuto non video"
+                if ok && isHLS {
+                    let playlist = String(decoding: head, as: UTF8.self)
+                    if let first = playlist.split(whereSeparator: \.isNewline).first(where: { !$0.hasPrefix("#") }),
+                       let segment = URL(string: String(first), relativeTo: url)?.absoluteURL {
+                        var segmentRequest = URLRequest(url: segment)
+                        segmentRequest.timeoutInterval = 12
+                        segmentRequest.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+                        let code = (try? await URLSession.shared.data(for: segmentRequest))
+                            .flatMap { ($0.1 as? HTTPURLResponse)?.statusCode } ?? 0
+                        if !(code == 200 || code == 206) { ok = false; detail = "Playlist OK ma segmenti HTTP \(code)" }
+                    }
+                }
                 results.append(CatchupProbeResult(variant: variant, ok: ok, detail: detail))
             } catch {
                 results.append(CatchupProbeResult(variant: variant, ok: false, detail: "Errore di rete"))

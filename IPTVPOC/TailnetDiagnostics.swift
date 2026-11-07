@@ -47,8 +47,8 @@ final class TailnetDiagnostics: ObservableObject {
         connection.cancel()
         checking = false
         state = reachable
-            ? "Host e porta raggiungibili dalla rete attuale (non prova che Tailscale sia attivo)."
-            : "Server non raggiungibile. Verifica Tailscale, DNS, indirizzo e porta."
+            ? "Host e porta raggiungibili dalla rete attuale."
+            : "Server non raggiungibile. Verifica rete/VPN (Tailscale se serve), DNS, indirizzo e porta."
     }
 
     func openTailscale() {

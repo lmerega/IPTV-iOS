@@ -7,6 +7,7 @@ on:
       - 'IPTVPOC/**'
       - 'Tests/**'
       - 'project.yml'
+      - 'Podfile'
       - '.github/workflows/build-ios.yml'
 permissions:
   contents: read
@@ -26,11 +27,13 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
+      - name: Install Pods (MobileVLCKit)
+        run: pod install
       - name: Build for physical iOS without signing
         run: |
           set -euo pipefail
           xcodebuild \
-            -project IPTVPOC.xcodeproj \
+            -workspace IPTVPOC.xcworkspace \
             -scheme IPTVPOC \
             -configuration Release \
             -sdk iphoneos \
@@ -68,9 +71,11 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
+      - name: Install Pods (MobileVLCKit)
+        run: pod install
       - name: Run unit tests on simulator
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}')
-          xcodebuild test -project IPTVPOC.xcodeproj -scheme IPTVPOC \
+          xcodebuild test -workspace IPTVPOC.xcworkspace -scheme IPTVPOC \
             -destination "id=$UDID" -derivedDataPath "$RUNNER_TEMP/DD" CODE_SIGNING_ALLOWED=NO

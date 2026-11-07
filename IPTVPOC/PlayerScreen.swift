@@ -27,7 +27,8 @@ struct PlayerScreen: View {
             VStack(spacing: 0) {
                 ZStack {
                     Color.black
-                    VideoPlayer(player: controller.player)
+                    if controller.engine == .vlc { VLCSurface(view: controller.vlc.view) }
+                    else { VideoPlayer(player: controller.player) }
                     if controller.isBuffering && controller.message == nil { ProgressView().tint(.white) }
                     if let text = controller.message {
                         Text(text).font(.footnote).foregroundStyle(.white).padding(10)
@@ -91,7 +92,9 @@ struct PlayerScreen: View {
             }
             HStack(spacing: 22) {
                 Button { controller.skip(-30) } label: { Image(systemName: "gobackward.30").font(.title2) }
+                    .disabled(!controller.canSkip)
                 Button { controller.skip(30) } label: { Image(systemName: "goforward.30").font(.title2) }
+                    .disabled(!controller.canSkip)
                 if request.channel != nil {
                     Button { controller.play(request.url, fallback: request.channel?.altURL) } label: {
                         Label("Diretta", systemImage: "dot.radiowaves.left.and.right")
@@ -111,6 +114,8 @@ struct PlayerScreen: View {
                     Button { showDiagnostics = true } label: { Image(systemName: "stethoscope") }
                 }
             }
+            Text(controller.engine == .vlc ? "Motore: VLC" : "Motore: AVPlayer (AirPlay disponibile)")
+                .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             if dvr.isRecording {
                 Text(dvr.status).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -128,6 +133,7 @@ struct PlayerScreen: View {
 
     private func start() async {
         controller.channel = request.channel
+        controller.enginePreference = model.current?.engine ?? "auto"
         controller.sourceProvider = { model.current }
         controller.onVariantResolved = { model.setCatchupVariant($0) }
         if let channel = request.channel, let program = request.program, let source = model.current {

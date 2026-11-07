@@ -37,9 +37,8 @@ enum IPTVService {
             }
         }
         guard let (data, response) = fetched else { throw IPTVError.invalidResponse }
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw IPTVError.invalidResponse
-        }
+        guard let http = response as? HTTPURLResponse else { throw IPTVError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else { throw IPTVError.http(http.statusCode) }
         return data
     }
 
@@ -101,7 +100,7 @@ enum IPTVService {
         let playlist = try baseURL(source.playlist)
         let data = try await get(playlist, timeout: 90)
         let body = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-        let channels = parseM3U(body, base: playlist, preferHLS: source.preferHLS)
+        let channels = parseM3U(body, base: playlist, preferHLS: source.preferHLS && source.hlsSupported != false)
         if channels.isEmpty { throw IPTVError.noChannels }
         return channels
     }
@@ -199,7 +198,8 @@ enum IPTVService {
         do { streams = try JSONDecoder().decode([XtreamStream].self, from: data) }
         catch { throw IPTVError.badCredentials }
         let categoryNames = await names
-        let ext = source.streamFormat == "ts" ? "ts" : "m3u8"
+        let useHLS = source.streamFormat == "m3u8" || (source.streamFormat == "auto" && source.hlsSupported != false)
+        let ext = useHLS ? "m3u8" : "ts"
         var results: [IPTVChannel] = []
         results.reserveCapacity(streams.count)
         for stream in streams {
@@ -210,10 +210,39 @@ enum IPTVService {
                                        group: group, url: link, streamID: number,
                                        archive: (stream.tv_archive ?? 0) > 0,
                                        logo: stream.stream_icon, epgID: stream.epg_channel_id,
-                                       archiveDays: stream.tv_archive_duration ?? 0))
+                                       archiveDays: stream.tv_archive_duration ?? 0,
+                                       altURL: useHLS ? try? streamURL(source, kind: "live", id: number, ext: "ts") : nil))
         }
         if results.isEmpty { throw IPTVError.noChannels }
         return results
+    }
+
+    /// Verifica se il server serve davvero HLS (.m3u8) per questo canale.
+    static func supportsHLS(_ channel: IPTVChannel) async -> Bool {
+        let candidate = channel.url.pathExtension.lowercased() == "m3u8" ? channel.url : hlsVariant(of: channel.altURL ?? channel.url)
+        guard let url = candidate else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
+            var head = Data()
+            for try await byte in bytes { head.append(byte); if head.count >= 64 { break } }
+            return String(decoding: head, as: UTF8.self).contains("#EXTM3U")
+        } catch { return false }
+    }
+
+    /// Passa i canali al formato scelto usando url/altURL.
+    static func applyFormat(_ channels: [IPTVChannel], hls: Bool) -> [IPTVChannel] {
+        channels.map { channel in
+            guard let alt = channel.altURL else { return channel }
+            var copy = channel
+            let isHLS = channel.url.pathExtension.lowercased() == "m3u8"
+            if hls == isHLS { return channel }
+            copy.url = alt
+            copy.altURL = channel.url
+            return copy
+        }
     }
 
     static func accountInfo(_ source: IPTVSource) async -> AccountInfo? {

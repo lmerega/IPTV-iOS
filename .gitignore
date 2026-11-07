@@ -14,3 +14,10 @@ private-playlists/
 
 # Local downloaded build artifacts
 /releases/
+.scratch/
+
+Pods/
+*.xcworkspace
+IPTVPOC.xcodeproj/
+IPTVPOC/Info.plist
+.scratch/

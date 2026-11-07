@@ -7,6 +7,14 @@ struct SettingsView: View {
     @State private var editing: IPTVSource?
     @State private var showNew = false
 
+    private var hlsLabel: String {
+        switch model.current?.hlsSupported {
+        case .some(true): return "Supportato"
+        case .some(false): return "Non supportato (TS)"
+        case .none: return "Da rilevare"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -63,22 +71,40 @@ struct SettingsView: View {
                     }
                 }
 
+                if model.current != nil {
+                    Section("Motore video") {
+                        Picker("Motore", selection: Binding(
+                            get: { model.current?.engine ?? "auto" },
+                            set: { value in model.mutateCurrent { $0.engine = value } })) {
+                            Text("Automatico").tag("auto")
+                            Text("AVPlayer (AirPlay)").tag("avplayer")
+                            Text("VLC (TS e altri formati)").tag("vlc")
+                        }
+                        LabeledContent("HLS (.m3u8) sul server", value: hlsLabel)
+                        Text("Automatico: AVPlayer per HLS/MP4, VLC per TS e formati non supportati; se AVPlayer fallisce passa a VLC.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Rete") {
+                    Button(tailnet.checking ? "Verifica in corso…" : "Verifica raggiungibilita' del server") {
+                        if let address = model.current?.rawAddress {
+                            Task { await tailnet.check(server: address) }
+                        }
+                    }.disabled(tailnet.checking || model.current == nil)
+                    Text(tailnet.state).font(.footnote).foregroundStyle(.secondary)
+                }
+
                 Section("Tailscale") {
                     Toggle("Uso Tailscale per server privati", isOn: $useTailscale)
                     if useTailscale {
-                        Button("Verifica raggiungibilita' del server") {
-                            if let address = model.current?.rawAddress {
-                                Task { await tailnet.check(server: address) }
-                            }
-                        }.disabled(tailnet.checking || model.current == nil)
-                        Text(tailnet.state).font(.footnote).foregroundStyle(.secondary)
                         Button("Apri app Tailscale", systemImage: "arrow.up.forward.app") { tailnet.openTailscale() }
                     }
                     if let host = model.current?.host, isTailnet(host) {
                         Label("Questa sorgente sembra nella tailnet: Tailscale deve essere connesso.", systemImage: "network")
                             .font(.footnote)
                     }
-                    Text("Come si usa: 1) accendi la VPN nell'app Tailscale; 2) nella sorgente inserisci l'indirizzo Tailscale del server (100.x.y.z o nome .ts.net); 3) usa \"Verifica\" qui sopra. Questo interruttore non accende la VPN: abilita solo i test e i suggerimenti. I provider pubblici funzionano anche senza Tailscale.")
+                    Text("Come si usa: 1) accendi la VPN nell'app Tailscale; 2) nella sorgente inserisci l'indirizzo Tailscale del server (100.x.y.z o nome .ts.net); 3) usa \"Verifica raggiungibilita'\" nella sezione Rete. Questo interruttore non accende la VPN: abilita solo i test e i suggerimenti. I provider pubblici funzionano anche senza Tailscale.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -166,6 +192,7 @@ struct ProfileEditor: View {
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         SecureField("Password", text: $draft.password)
                         Picker("Formato live", selection: $draft.streamFormat) {
+                            Text("Automatico").tag("auto")
                             Text("HLS (m3u8)").tag("m3u8")
                             Text("MPEG-TS").tag("ts")
                         }

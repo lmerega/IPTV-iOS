@@ -39,7 +39,9 @@ final class AppModel: ObservableObject {
         catch { errorMessage = "Impossibile salvare le sorgenti nel Keychain." }
     }
 
-    func upsert(_ profile: IPTVSource) {
+    func upsert(_ original: IPTVSource) {
+        var profile = original
+        profile.hlsSupported = nil
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
         else { profiles.append(profile) }
         persist()
@@ -96,6 +98,14 @@ final class AppModel: ObservableObject {
             return
         }
         isLoading = false
+        let wantsDetection = source.hlsSupported == nil
+            && (source.streamFormat == "auto" || (source.kind == "m3u" && source.preferHLS))
+        if wantsDetection, let sample = channels.first(where: { $0.altURL != nil }) {
+            let hls = await IPTVService.supportsHLS(sample)
+            guard generation == loadGeneration else { return }
+            mutateCurrent { $0.hlsSupported = hls }
+            if !hls { channels = IPTVService.applyFormat(channels, hls: false) }
+        }
         if source.kind == "xtream" {
             if let info = await IPTVService.accountInfo(source) {
                 account = info

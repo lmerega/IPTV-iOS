@@ -2,9 +2,13 @@ import Foundation
 import AVFoundation
 import AVKit
 
+enum PlaybackEngine { case avplayer, vlc }
+
 @MainActor
 final class PlayerController: ObservableObject {
     let player = AVPlayer()
+    let vlc = VLCEngine()
+    @Published var engine: PlaybackEngine = .avplayer
     @Published var message: String?
     @Published var isBuffering = true
     @Published var catchupProgram: GuideProgram?
@@ -12,6 +16,7 @@ final class PlayerController: ObservableObject {
     @Published var probeResults: [CatchupProbeResult] = []
 
     var channel: IPTVChannel?
+    var enginePreference = "auto"
     var sourceProvider: (() -> IPTVSource?)?
     var onVariantResolved: ((CatchupVariant) -> Void)?
 
@@ -20,6 +25,10 @@ final class PlayerController: ObservableObject {
     private var streamOffset: Double = 0
     private var generation = 0
     private var fallbackURL: URL?
+    private var currentURL: URL?
+    private var triedVLC = false
+
+    var canSkip: Bool { catchupProgram != nil || engine == .avplayer }
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -30,6 +39,15 @@ final class PlayerController: ObservableObject {
             let seconds = time.seconds
             Task { @MainActor in self?.tick(seconds) }
         }
+        vlc.onBuffering = { [weak self] buffering in self?.isBuffering = buffering
+            if !buffering { self?.message = nil } }
+        vlc.onError = { [weak self] in
+            self?.isBuffering = false
+            self?.message = VLCEngine.isAvailable
+                ? "Riproduzione non riuscita con VLC. Il flusso potrebbe non essere disponibile."
+                : "Motore VLC non incluso in questa build."
+        }
+        vlc.onTime = { [weak self] seconds in self?.tick(seconds) }
     }
 
     private func tick(_ seconds: Double) {
@@ -37,9 +55,30 @@ final class PlayerController: ObservableObject {
         position = streamOffset + seconds
     }
 
-    private func load(_ url: URL) {
+    private func engineFor(_ url: URL) -> PlaybackEngine {
+        switch enginePreference {
+        case "vlc": return VLCEngine.isAvailable ? .vlc : .avplayer
+        case "avplayer": return .avplayer
+        default:
+            let native = ["m3u8", "mp4", "m4v", "mov"].contains(url.pathExtension.lowercased())
+            return native || !VLCEngine.isAvailable ? .avplayer : .vlc
+        }
+    }
+
+    private func load(_ url: URL, forceEngine: PlaybackEngine? = nil) {
         message = nil
         isBuffering = true
+        currentURL = url
+        let chosen = forceEngine ?? engineFor(url)
+        engine = chosen
+        if chosen == .vlc {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            statusObservation = nil
+            vlc.play(url)
+            return
+        }
+        vlc.stop()
         let item = AVPlayerItem(url: url)
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status
@@ -59,12 +98,15 @@ final class PlayerController: ObservableObject {
             if let fallback = fallbackURL {
                 fallbackURL = nil
                 load(fallback)
-                message = "Formato HLS non disponibile, provo il flusso originale…"
+                return
+            }
+            if enginePreference != "avplayer", VLCEngine.isAvailable, !triedVLC, let url = currentURL {
+                triedVLC = true
+                load(url, forceEngine: .vlc)
                 return
             }
             isBuffering = false
-            message = "Riproduzione non riuscita (\(text ?? "formato non supportato")). "
-                + "Con flussi MPEG-TS diretti prova il formato HLS (m3u8) o un altro formato replay."
+            message = "Riproduzione non riuscita (\(text ?? "formato non supportato"))."
         default:
             break
         }
@@ -74,6 +116,7 @@ final class PlayerController: ObservableObject {
         generation += 1
         catchupProgram = nil
         fallbackURL = fallback
+        triedVLC = false
         load(url)
     }
 
@@ -101,6 +144,7 @@ final class PlayerController: ObservableObject {
             onVariantResolved?(good.variant)
         }
         fallbackURL = nil
+        triedVLC = false
         guard let url = CatchupResolver.url(variant: variant, source: source, channel: channel,
                                             start: start, duration: duration) else {
             isBuffering = false
@@ -115,7 +159,7 @@ final class PlayerController: ObservableObject {
         let total = program.end.timeIntervalSince(program.start)
         let clamped = min(max(0, target), max(0, total - 5))
         let local = clamped - streamOffset
-        if local >= 0, let ranges = player.currentItem?.seekableTimeRanges {
+        if engine == .avplayer, local >= 0, let ranges = player.currentItem?.seekableTimeRanges {
             let time = CMTime(seconds: local, preferredTimescale: 600)
             if ranges.contains(where: { $0.timeRangeValue.containsTime(time) }) {
                 player.seek(to: time)
@@ -128,7 +172,7 @@ final class PlayerController: ObservableObject {
     func skip(_ delta: Double) {
         if catchupProgram != nil {
             seekCatchup(to: position + delta)
-        } else {
+        } else if engine == .avplayer {
             let target = max(0, player.currentTime().seconds + delta)
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
@@ -139,6 +183,7 @@ final class PlayerController: ObservableObject {
         player.pause()
         player.replaceCurrentItem(with: nil)
         statusObservation = nil
+        vlc.teardown()
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil

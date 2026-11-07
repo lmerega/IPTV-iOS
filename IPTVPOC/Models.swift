@@ -11,7 +11,7 @@ struct IPTVChannel: Identifiable, Hashable {
     let id: String
     let name: String
     let group: String
-    let url: URL
+    var url: URL
     let streamID: Int?
     let archive: Bool
     var logo: String? = nil
@@ -31,17 +31,19 @@ struct IPTVSource: Codable, Identifiable, Equatable {
     var password = ""
     var playlist = ""
     var epgURL = ""
-    var streamFormat = "m3u8"
+    var streamFormat = "auto"
     var archiveShiftMinutes = 0
     var catchupVariant = "auto"
     var serverTimeZone = ""
     var preferHLS = true
+    var engine = "auto"
+    var hlsSupported: Bool? = nil
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, server, username, password, playlist, epgURL
-        case streamFormat, archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS
+        case streamFormat, archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS, engine, hlsSupported
     }
 
     init(from decoder: Decoder) throws {
@@ -54,11 +56,14 @@ struct IPTVSource: Codable, Identifiable, Equatable {
         password = (try? c.decode(String.self, forKey: .password)) ?? ""
         playlist = (try? c.decode(String.self, forKey: .playlist)) ?? ""
         epgURL = (try? c.decode(String.self, forKey: .epgURL)) ?? ""
-        streamFormat = (try? c.decode(String.self, forKey: .streamFormat)) ?? "m3u8"
+        let storedFormat = (try? c.decode(String.self, forKey: .streamFormat)) ?? "auto"
+        streamFormat = storedFormat == "m3u8" ? "auto" : storedFormat
         archiveShiftMinutes = (try? c.decode(Int.self, forKey: .archiveShiftMinutes)) ?? 0
         catchupVariant = (try? c.decode(String.self, forKey: .catchupVariant)) ?? "auto"
         serverTimeZone = (try? c.decode(String.self, forKey: .serverTimeZone)) ?? ""
         preferHLS = (try? c.decode(Bool.self, forKey: .preferHLS)) ?? true
+        engine = (try? c.decode(String.self, forKey: .engine)) ?? "auto"
+        hlsSupported = try? c.decodeIfPresent(Bool.self, forKey: .hlsSupported)
     }
 
     var rawAddress: String { kind == "xtream" ? server : playlist }
@@ -106,13 +111,14 @@ struct PlayRequest: Identifiable {
 }
 
 enum IPTVError: LocalizedError {
-    case invalidURL, invalidResponse, noChannels, badCredentials
+    case invalidURL, invalidResponse, noChannels, badCredentials, http(Int)
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Indirizzo non valido."
         case .invalidResponse: return "Risposta del server non valida."
         case .noChannels: return "Nessun canale rilevato."
         case .badCredentials: return "Autenticazione non riuscita: controlla utente e password."
+        case .http(let code): return "Il server ha risposto con errore HTTP \(code)."
         }
     }
 }

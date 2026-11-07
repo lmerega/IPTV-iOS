@@ -85,6 +85,23 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(list[1].altURL)
     }
 
+    func testTSSyncDetectionWithOffset() {
+        var data = Data(repeating: 0, count: 700)
+        for index in stride(from: 37, to: 700, by: 188) { data[index] = 0x47 }
+        XCTAssertTrue(CatchupResolver.hasTSSync(data))
+        XCTAssertFalse(CatchupResolver.hasTSSync(Data(repeating: 1, count: 700)))
+    }
+
+    func testApplyFormatSwapsURLs() {
+        let hls = URL(string: "http://example.invalid/live/u/p/1.m3u8")!
+        let ts = URL(string: "http://example.invalid/live/u/p/1.ts")!
+        let channel = IPTVChannel(id: "x1", name: "C", group: "g", url: hls, streamID: 1, archive: false, altURL: ts)
+        let swapped = IPTVService.applyFormat([channel], hls: false)
+        XCTAssertEqual(swapped[0].url, ts)
+        XCTAssertEqual(swapped[0].altURL, hls)
+        XCTAssertEqual(IPTVService.applyFormat(swapped, hls: false)[0].url, ts)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))
