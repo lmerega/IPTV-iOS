@@ -60,7 +60,7 @@ struct PlayerScreen: View {
     private var videoSurface: some View {
         ZStack {
             Color.black
-            if controller.engine == .vlc { VLCSurface(view: controller.vlc.view) }
+            if controller.engine == .vlc { VLCSurface(view: controller.vlc.view).clipped() }
             else { VideoPlayer(player: controller.player) }
             if controller.isBuffering && !controller.isPaused {
                 VStack(spacing: 8) {

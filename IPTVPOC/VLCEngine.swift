@@ -7,7 +7,7 @@ import MobileVLCKit
 @MainActor
 final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     static let isAvailable = true
-    let view = UIView()
+    let view: UIView = VLCContainerView()
     private let player = VLCMediaPlayer()
     var onBuffering: ((Bool) -> Void)?
     var onError: (() -> Void)?
@@ -29,6 +29,8 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         let media = VLCMedia(url: url)
         media.addOptions(["network-caching": 1500, "clock-jitter": 0, "clock-synchro": 0])
         player.media = media
+        player.videoAspectRatio = nil
+        player.scaleFactor = 0
         onBuffering?(true)
         player.play()
     }
@@ -128,6 +130,26 @@ final class VLCEngine: NSObject {
     func jump(_ delta: Int32) {}
 }
 #endif
+
+/// Contenitore della superficie VLC: tiene sempre le viste interne dentro i propri limiti,
+/// anche quando VLC le ricrea a ogni riapertura del flusso.
+final class VLCContainerView: UIView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+        backgroundColor = .black
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) non supportato") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        for subview in subviews { subview.frame = bounds }
+    }
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        subview.frame = bounds
+        subview.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    }
+}
 
 struct VLCSurface: UIViewRepresentable {
     let view: UIView
