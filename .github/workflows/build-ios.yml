@@ -1,0 +1,56 @@
+name: Build unsigned iOS IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'IPTVPOC/**'
+      - 'project.yml'
+      - '.github/workflows/build-ios.yml'
+permissions:
+  contents: read
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+      - name: Build for physical iOS without signing
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project IPTVPOC.xcodeproj \
+            -scheme IPTVPOC \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Create unsigned IPA
+        run: |
+          set -euo pipefail
+          mkdir -p output/Payload
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/IPTVPOC.app"
+          test -d "$APP"
+          cp -R "$APP" output/Payload/
+          (cd output && /usr/bin/zip -qry IPTVPOC-unsigned.ipa Payload)
+          test -s output/IPTVPOC-unsigned.ipa
+          shasum -a 256 output/IPTVPOC-unsigned.ipa
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPTVPOC-unsigned-${{ github.run_number }}
+          path: output/IPTVPOC-unsigned.ipa
+          retention-days: 7
+          if-no-files-found: error
