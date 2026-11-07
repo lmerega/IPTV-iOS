@@ -1,0 +1,13 @@
+# Xcode/XcodeGen
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+.build/
+*.ipa
+*.xcuserstate
+.DS_Store
+# Never commit credentials, playlist exports or logs
+.env
+*.secrets
+*.log
+private-playlists/
