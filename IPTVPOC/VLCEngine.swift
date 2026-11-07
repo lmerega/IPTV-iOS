@@ -14,13 +14,50 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     var onTime: ((Double) -> Void)?
     var onState: ((String) -> Void)?
     var isPlaying: Bool { player.isPlaying }
+    /// Riempi lo schermo: ritaglia il video alle proporzioni della vista invece di lasciare bande nere.
+    var fill = false { didSet { if fill != oldValue { lastCrop = nil; applyCrop() } } }
+    private var lastCrop: String?
 
     override init() {
         super.init()
         view.backgroundColor = .black
         player.drawable = view
         player.delegate = self
+        (view as? VLCContainerView)?.onLayout = { [weak self] in self?.applyCrop() }
     }
+
+    private func applyCrop() {
+        let size = view.bounds.size
+        let crop: String? = fill && size.width > 0 && size.height > 0
+            ? "\(Int(size.width.rounded())):\(Int(size.height.rounded()))" : nil
+        guard crop != lastCrop || crop == nil else { return }
+        lastCrop = crop
+        if let crop {
+            crop.withCString { player.videoCropGeometry = UnsafeMutablePointer(mutating: $0) }
+        } else {
+            player.videoCropGeometry = nil
+        }
+    }
+
+    // MARK: Tracce audio e sottotitoli
+
+    private func tracks(_ indexes: [Any]?, _ names: [Any]?, keepDisabled: Bool) -> [MediaTrack] {
+        zip(indexes ?? [], names ?? []).compactMap { index, name in
+            guard let id = (index as? NSNumber)?.int32Value else { return nil }
+            if id < 0 { return keepDisabled ? MediaTrack(id: id, name: "Disattivati") : nil }
+            let label = (name as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Traccia \(id)"
+            return MediaTrack(id: id, name: label)
+        }
+    }
+
+    var audioTracks: [MediaTrack] { tracks(player.audioTrackIndexes, player.audioTrackNames, keepDisabled: false) }
+    var subtitleTracks: [MediaTrack] {
+        tracks(player.videoSubTitlesIndexes, player.videoSubTitlesNames, keepDisabled: true)
+    }
+    var currentAudio: Int32 { player.currentAudioTrackIndex }
+    var currentSubtitle: Int32 { player.currentVideoSubTitleIndex }
+    func selectAudio(_ id: Int32) { player.currentAudioTrackIndex = id }
+    func selectSubtitle(_ id: Int32) { player.currentVideoSubTitleIndex = id }
 
     func play(_ url: URL) {
         player.stop()
@@ -33,6 +70,7 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         player.media = media
         player.videoAspectRatio = nil
         player.scaleFactor = 0
+        lastCrop = nil
         onBuffering?(true)
         player.play()
     }
@@ -100,7 +138,10 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
 
     private func handleState() {
         switch player.state {
-        case .playing: onState?("VLC: in riproduzione"); onBuffering?(false)
+        case .playing:
+            onState?("VLC: in riproduzione"); onBuffering?(false)
+            lastCrop = nil
+            applyCrop()
         case .buffering: onBuffering?(!player.isPlaying)
         case .opening: onState?("VLC: apertura flusso"); onBuffering?(true)
         case .error: onState?("VLC: errore"); onError?()
@@ -130,12 +171,20 @@ final class VLCEngine: NSObject {
     func streamSummary() -> String? { nil }
     func seek(to seconds: Double) {}
     func jump(_ delta: Int32) {}
+    var fill = false
+    var audioTracks: [MediaTrack] { [] }
+    var subtitleTracks: [MediaTrack] { [] }
+    var currentAudio: Int32 { -1 }
+    var currentSubtitle: Int32 { -1 }
+    func selectAudio(_ id: Int32) {}
+    func selectSubtitle(_ id: Int32) {}
 }
 #endif
 
 /// Contenitore della superficie VLC: tiene sempre le viste interne dentro i propri limiti,
 /// anche quando VLC le ricrea a ogni riapertura del flusso.
 final class VLCContainerView: UIView {
+    var onLayout: (() -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         clipsToBounds = true
@@ -145,6 +194,7 @@ final class VLCContainerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         for subview in subviews { subview.frame = bounds }
+        onLayout?()
     }
     override func didAddSubview(_ subview: UIView) {
         super.didAddSubview(subview)

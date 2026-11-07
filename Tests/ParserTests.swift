@@ -164,6 +164,23 @@ final class ParserTests: XCTestCase {
         buffer.reset(capacity: 64_000_000)
     }
 
+    func testOnDemandCatalogRecentAndSearch() {
+        func item(_ id: Int, _ title: String, _ category: String, _ added: Double) -> OnDemandItem {
+            OnDemandItem(id: "movie-\(id)", title: title, category: category, cover: nil, url: nil,
+                         seriesID: nil, added: added)
+        }
+        let catalog = OnDemandCatalog([item(1, "Città Futura", "Drammatico", 100),
+                                       item(2, "Commedia Sexy", "Commedia", 300),
+                                       item(1, "Città Futura", "Drammatico", 100),
+                                       item(3, "Senza data", "Commedia", 0)])
+        XCTAssertEqual(catalog.items.count, 3)
+        XCTAssertEqual(Array(catalog.categories.prefix(2)), [OnDemandCatalog.all, OnDemandCatalog.recent])
+        XCTAssertEqual(catalog.filter(category: OnDemandCatalog.recent, query: "").map(\.id), ["movie-2", "movie-1"])
+        XCTAssertEqual(catalog.filter(category: OnDemandCatalog.all, query: "citta").map(\.id), ["movie-1"])
+        XCTAssertEqual(catalog.filter(category: "Commedia", query: "").count, 2)
+        XCTAssertEqual(catalog.counts["Commedia"], 2)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

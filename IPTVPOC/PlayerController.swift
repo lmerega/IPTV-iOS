@@ -19,6 +19,10 @@ final class PlayerController: ObservableObject {
     @Published var duration: Double = 0
     @Published var currentTime: Double = 0
     @Published var streamInfo: String?
+    @Published var audioTracks: [MediaTrack] = []
+    @Published var subtitleTracks: [MediaTrack] = []
+    @Published var currentAudio: Int32 = -1
+    @Published var currentSubtitle: Int32 = -1
     @Published var tsActive = false
     @Published var tsPosition = Date()
     @Published var tsRange: ClosedRange<Date>?
@@ -153,10 +157,37 @@ final class PlayerController: ObservableObject {
         if Date().timeIntervalSince(lastInfoUpdate) > 2 {
             lastInfoUpdate = Date()
             streamInfo = engine == .vlc ? vlc.streamSummary() : avPlayerSummary()
+            refreshTracks()
         }
         if engine == .vlc && duration <= 0 { duration = vlc.lengthSeconds }
         guard catchupProgram != nil else { return }
         position = streamOffset + seconds
+    }
+
+    /// Lingue e sottotitoli (VLC; AVPlayer li offre gia' nei suoi controlli).
+    private func refreshTracks() {
+        guard engine == .vlc else {
+            if !audioTracks.isEmpty || !subtitleTracks.isEmpty { audioTracks = []; subtitleTracks = [] }
+            return
+        }
+        let audio = vlc.audioTracks
+        let subtitles = vlc.subtitleTracks
+        if audio != audioTracks { audioTracks = audio }
+        if subtitles != subtitleTracks { subtitleTracks = subtitles }
+        currentAudio = vlc.currentAudio
+        currentSubtitle = vlc.currentSubtitle
+    }
+
+    func selectAudio(_ track: MediaTrack) {
+        vlc.selectAudio(track.id)
+        currentAudio = track.id
+        log("Audio: \(track.name)")
+    }
+
+    func selectSubtitle(_ track: MediaTrack) {
+        vlc.selectSubtitle(track.id)
+        currentSubtitle = track.id
+        log("Sottotitoli: \(track.name)")
     }
 
     private func engineFor(_ url: URL) -> PlaybackEngine {
@@ -229,6 +260,8 @@ final class PlayerController: ObservableObject {
         duration = 0
         currentTime = 0
         streamInfo = nil
+        audioTracks = []
+        subtitleTracks = []
         tsActive = false
         if live, let channel, engineFor(url) == .vlc, TimeshiftManager.shared.enabled {
             let mine = generation

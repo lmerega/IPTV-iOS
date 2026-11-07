@@ -72,7 +72,8 @@ enum IPTVExtras {
             let url = try? IPTVService.streamURL(source, kind: "movie", id: id, ext: ext.isEmpty ? "mp4" : ext)
             let category = categories[IPTVService.text(e["category_id"])] ?? "Film"
             return OnDemandItem(id: "movie-\(id)", title: IPTVService.text(e["name"]), category: category,
-                                cover: IPTVService.text(e["stream_icon"]), url: url, seriesID: nil)
+                                cover: IPTVService.text(e["stream_icon"]), url: url, seriesID: nil,
+                                added: Double(IPTVService.text(e["added"])) ?? 0)
         }
     }
 
@@ -85,7 +86,8 @@ enum IPTVExtras {
             guard let id = Int(IPTVService.text(e["series_id"])) else { return nil }
             let category = categories[IPTVService.text(e["category_id"])] ?? "Serie"
             return OnDemandItem(id: "series-\(id)", title: IPTVService.text(e["name"]), category: category,
-                                cover: IPTVService.text(e["cover"]), url: nil, seriesID: id)
+                                cover: IPTVService.text(e["cover"]), url: nil, seriesID: id,
+                                added: Double(IPTVService.text(e["last_modified"])) ?? 0)
         }
     }
 

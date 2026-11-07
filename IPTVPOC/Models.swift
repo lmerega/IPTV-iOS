@@ -100,6 +100,14 @@ struct OnDemandItem: Identifiable, Hashable {
     let seriesID: Int?
     var season: Int = 0
     var episode: Int = 0
+    /// Data di inserimento nel catalogo (Unix), per "Aggiunti di recente".
+    var added: Double = 0
+}
+
+/// Traccia audio o sottotitoli selezionabile nel player.
+struct MediaTrack: Identifiable, Hashable {
+    let id: Int32
+    let name: String
 }
 
 struct PlayRequest: Identifiable {

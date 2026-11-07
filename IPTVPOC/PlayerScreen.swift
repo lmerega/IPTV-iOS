@@ -22,6 +22,7 @@ struct PlayerScreen: View {
     @State private var diagnosticTaps: [Date] = []
     @State private var tapToken = UUID()
     @State private var toast: String?
+    @AppStorage("videoFill") private var videoFill = false
 
     private var visiblePrograms: [GuideProgram] {
         programs.filter { $0.start < Date().addingTimeInterval(12 * 3600) }
@@ -51,6 +52,8 @@ struct PlayerScreen: View {
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
             handleRotation()
         }
+        .onChange(of: fullscreen, initial: true) { controller.vlc.fill = fullscreen && videoFill }
+        .onChange(of: videoFill) { controller.vlc.fill = fullscreen && videoFill }
         .task { await start() }
         .onDisappear {
             controller.stop()
@@ -64,7 +67,7 @@ struct PlayerScreen: View {
         ZStack {
             Color.black
             if controller.engine == .vlc { VLCSurface(view: controller.vlc.view).clipped() }
-            else { VideoPlayer(player: controller.player) }
+            else { AVPlayerSurface(player: controller.player, fill: fullscreen && videoFill) }
             if controller.isBuffering && !controller.isPaused {
                 VStack(spacing: 8) {
                     ProgressView().tint(.white)
@@ -185,6 +188,12 @@ struct PlayerScreen: View {
                     HStack {
                         Text(request.title).font(.headline).lineLimit(1)
                         Spacer()
+                        Button { videoFill.toggle(); showOverlay(true) } label: {
+                            Image(systemName: videoFill ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                                .font(.title3)
+                        }
+                        .accessibilityLabel(videoFill ? "Adatta allo schermo" : "Riempi lo schermo")
+                        .padding(.trailing, 18)
                         Button { setFullscreen(false) } label: {
                             Image(systemName: "arrow.down.right.and.arrow.up.left").font(.title3)
                         }
@@ -199,6 +208,7 @@ struct PlayerScreen: View {
                             skipButton(-30, "gobackward.30")
                             pauseButton.font(.largeTitle)
                             skipButton(30, "goforward.30")
+                            tracksMenu.font(.title2)
                         }
                     }
                     .padding().background(.black.opacity(0.55))
@@ -208,6 +218,37 @@ struct PlayerScreen: View {
         }
         .statusBarHidden(true)
         .background(Color.black.ignoresSafeArea())
+    }
+
+    /// Menu lingue e sottotitoli: compare solo se il contenuto ha piu' audio o dei sottotitoli.
+    @ViewBuilder private var tracksMenu: some View {
+        if controller.audioTracks.count > 1 || controller.subtitleTracks.count > 1 {
+            Menu {
+                if controller.audioTracks.count > 1 {
+                    Section("Audio") {
+                        ForEach(controller.audioTracks) { track in
+                            Button { controller.selectAudio(track) } label: {
+                                if track.id == controller.currentAudio { Label(track.name, systemImage: "checkmark") }
+                                else { Text(track.name) }
+                            }
+                        }
+                    }
+                }
+                if controller.subtitleTracks.count > 1 {
+                    Section("Sottotitoli") {
+                        ForEach(controller.subtitleTracks) { track in
+                            Button { controller.selectSubtitle(track) } label: {
+                                if track.id == controller.currentSubtitle { Label(track.name, systemImage: "checkmark") }
+                                else { Text(track.name) }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "captions.bubble")
+            }
+            .accessibilityLabel("Lingua e sottotitoli")
+        }
     }
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
@@ -315,6 +356,7 @@ struct PlayerScreen: View {
                 skipButton(-30, "gobackward.30")
                 skipButton(30, "goforward.30")
                 Spacer(minLength: 8)
+                tracksMenu.font(.title3)
                 Button { diagnosticsTapped() } label: { Image(systemName: "stethoscope").font(.title3) }
             }
             HStack(spacing: 10) {
@@ -471,5 +513,24 @@ struct CatchupDiagnosticsView: View {
                                                               start: start, duration: duration)
         if let good = controller.probeResults.first(where: { $0.ok }) { model.setCatchupVariant(good.variant) }
         running = false
+    }
+}
+
+/// Video AVPlayer con i controlli di sistema (AirPlay, lingue e sottotitoli) e modalita' riempi/adatta.
+struct AVPlayerSurface: UIViewControllerRepresentable {
+    let player: AVPlayer
+    let fill: Bool
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.allowsPictureInPicturePlayback = false
+        controller.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        if controller.player !== player { controller.player = player }
+        controller.videoGravity = fill ? .resizeAspectFill : .resizeAspect
     }
 }

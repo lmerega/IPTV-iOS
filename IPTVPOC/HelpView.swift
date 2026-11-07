@@ -31,6 +31,16 @@ struct HelpView: View {
             Entry(title: "Icona stetoscopio",
                   text: "Apre la diagnostica: il registro di cosa sta facendo il player e il test dei formati di replay. \"Copia log\" copia il registro per inviarlo.")
         ]),
+        ("Film e serie", [
+            Entry(title: "Aggiunti di recente",
+                  text: "La prima voce dopo \"Tutte\" mostra gli ultimi 200 titoli inseriti dal provider, dal piu' nuovo."),
+            Entry(title: "Ricerca",
+                  text: "Scrivi nel campo Cerca: la ricerca parte appena smetti di scrivere, ignora maiuscole e accenti e vale nella categoria scelta."),
+            Entry(title: "Lingua e sottotitoli",
+                  text: "Se il contenuto ha piu' lingue o sottotitoli, nel player compare l'icona del fumetto: toccala per scegliere. Con AVPlayer la scelta e' nei controlli del video."),
+            Entry(title: "Bande nere ai lati",
+                  text: "Compaiono quando le proporzioni del video sono diverse da quelle dello schermo: il video non e' deformato. A schermo intero il pulsante accanto a quello di uscita alterna \"Riempi\" (ingrandisce e taglia i bordi) e \"Adatta\" (tutto visibile).")
+        ]),
         ("Timeshift: pausa e indietro sulla diretta", [
             Entry(title: "Cosa fa",
                   text: "Mentre guardi un canale l'app lo salva in un file sul telefono, come facevano i decoder Enigma2. Cosi' puoi mettere in pausa, tornare indietro e poi tornare in diretta."),
