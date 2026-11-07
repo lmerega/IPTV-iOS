@@ -55,7 +55,7 @@ struct HelpView: View {
         ]),
         ("Registrazioni", [
             Entry(title: "Come funzionano",
-                  text: "Registrano il canale su questo dispositivo solo mentre l'app e' aperta. Usano una connessione in piu' verso il provider."),
+                  text: "La registrazione in corso e' visibile nella scheda Registrazioni, con il pulsante per fermarla. Continua anche chiudendo il video, ma solo con l'app aperta in primo piano. Senza timeshift usa una connessione in piu' verso il provider."),
             Entry(title: "Spazio massimo",
                   text: "Dimensione massima di ogni registrazione: raggiunta la soglia la registrazione si ferma e viene salvata."),
             Entry(title: "File",

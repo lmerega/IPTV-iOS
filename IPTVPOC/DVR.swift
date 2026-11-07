@@ -286,7 +286,7 @@ struct RecordingsView: View {
                         Text("5 GB").tag(5120)
                         Text("10 GB").tag(10240)
                     }
-                    Text("Registra soltanto mentre l'app è attiva. Supporta flussi MPEG-TS diretti e HLS non cifrati. La registrazione usa una connessione in più: il tuo account ne permette un numero limitato.")
+                    Text("La registrazione in corso compare qui sopra e continua anche chiudendo il video, finche' l'app resta aperta in primo piano: se esci dall'app o blocchi il telefono, iOS la sospende dopo pochi secondi. Con il timeshift attivo copia i dati dal buffer senza aprire altre connessioni e si ferma cambiando canale.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Registrazioni salvate") {

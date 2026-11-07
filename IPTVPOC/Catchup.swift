@@ -5,11 +5,11 @@ enum CatchupVariant: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .auto: return "Automatico (test)"
-        case .m3u8: return "Xtream timeshift .m3u8"
-        case .php: return "timeshift.php"
-        case .ts: return "Xtream timeshift .ts"
-        case .utc: return "Live con ?utc= (shift)"
+        case .auto: return "Automatico (consigliato)"
+        case .m3u8: return "Archivio come playlist HLS"
+        case .php: return "Archivio Xtream classico"
+        case .ts: return "Archivio come file TS"
+        case .utc: return "Canale live riavvolto"
         }
     }
 
