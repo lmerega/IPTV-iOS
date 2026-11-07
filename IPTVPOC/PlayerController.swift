@@ -19,6 +19,10 @@ final class PlayerController: ObservableObject {
     @Published var duration: Double = 0
     @Published var currentTime: Double = 0
     @Published var streamInfo: String?
+    @Published var tsActive = false
+    @Published var tsPosition = Date()
+    @Published var tsRange: ClosedRange<Date>?
+    private var tsStartDate = Date()
     private var lastInfoUpdate = Date.distantPast
     @Published var logLines: [String] = []
 
@@ -35,8 +39,10 @@ final class PlayerController: ObservableObject {
     private var currentURL: URL?
     private var triedVLC = false
 
+    var tsBehind: Double { max(0, Date().timeIntervalSince(tsPosition)) }
+
     var canSkip: Bool {
-        if catchupProgram != nil { return true }
+        if catchupProgram != nil || tsActive { return true }
         if isLive { return channel?.archive == true || engine == .avplayer }
         return true
     }
@@ -94,6 +100,12 @@ final class PlayerController: ObservableObject {
     private func tick(_ seconds: Double) {
         guard seconds.isFinite else { return }
         currentTime = seconds
+        if tsActive {
+            let timeshift = TimeshiftManager.shared
+            tsPosition = tsStartDate.addingTimeInterval(seconds)
+            tsRange = timeshift.buffer.dateRange
+            timeshift.playbackOffset = timeshift.buffer.offset(at: tsPosition)
+        }
         if Date().timeIntervalSince(lastInfoUpdate) > 2 {
             lastInfoUpdate = Date()
             streamInfo = engine == .vlc ? vlc.streamSummary() : avPlayerSummary()
@@ -171,6 +183,29 @@ final class PlayerController: ObservableObject {
         duration = 0
         currentTime = 0
         streamInfo = nil
+        tsActive = false
+        if live, let channel, engineFor(url) == .vlc, TimeshiftManager.shared.enabled {
+            let mine = generation
+            fallbackURL = fallback
+            triedVLC = false
+            isBuffering = true
+            message = "Avvio timeshift…"
+            Task {
+                let local = await TimeshiftManager.shared.tune(channel, url: url)
+                guard mine == generation else { return }
+                if let local {
+                    tsActive = true
+                    tsStartDate = Date()
+                    tsPosition = tsStartDate
+                    log("Timeshift attivo: un'unica connessione, lettura dal buffer locale")
+                    load(local, forceEngine: .vlc)
+                } else {
+                    log("Timeshift non disponibile: flusso diretto")
+                    load(url)
+                }
+            }
+            return
+        }
         fallbackURL = fallback
         triedVLC = false
         load(url)
@@ -181,6 +216,10 @@ final class PlayerController: ObservableObject {
         let mine = generation
         catchupProgram = program
         isLive = false
+        if tsActive {
+            tsActive = false
+            TimeshiftManager.shared.release(keepForRecording: DVRManager.shared.isBufferRecording)
+        }
         streamOffset = offset
         position = offset
         isBuffering = true
@@ -236,8 +275,33 @@ final class PlayerController: ObservableObject {
         Task { await playCatchup(source: source, channel: channel, program: program, offset: clamped) }
     }
 
+    func seekTimeshift(to target: Date) {
+        let timeshift = TimeshiftManager.shared
+        guard tsActive, let range = timeshift.buffer.dateRange else { return }
+        if target >= Date().addingTimeInterval(-6) { goLive(); return }
+        let clamped = max(range.lowerBound.addingTimeInterval(2), target)
+        let offset = timeshift.buffer.offset(at: clamped)
+        guard let url = timeshift.localURL(from: offset) else { return }
+        tsStartDate = timeshift.buffer.date(at: offset) ?? clamped
+        tsPosition = tsStartDate
+        log("Timeshift: -\(Int(Date().timeIntervalSince(tsStartDate))) s")
+        load(url, forceEngine: .vlc)
+    }
+
+    func goLive() {
+        let timeshift = TimeshiftManager.shared
+        let offset = timeshift.liveOffset
+        guard tsActive, let url = timeshift.localURL(from: offset) else { return }
+        tsStartDate = timeshift.buffer.date(at: offset) ?? Date()
+        tsPosition = tsStartDate
+        log("Timeshift: torno in diretta")
+        load(url, forceEngine: .vlc)
+    }
+
     func skip(_ delta: Double) {
-        if catchupProgram != nil {
+        if tsActive {
+            seekTimeshift(to: tsPosition.addingTimeInterval(delta))
+        } else if catchupProgram != nil {
             seekCatchup(to: position + delta)
         } else if isLive, delta < 0, let channel, channel.archive, let source = sourceProvider?() {
             // Differita: riparte dall'archivio del canale poco prima di adesso.
@@ -276,6 +340,10 @@ final class PlayerController: ObservableObject {
         player.replaceCurrentItem(with: nil)
         statusObservation = nil
         vlc.teardown()
+        if tsActive {
+            tsActive = false
+        }
+        TimeshiftManager.shared.release(keepForRecording: DVRManager.shared.isBufferRecording)
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil

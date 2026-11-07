@@ -31,6 +31,16 @@ struct HelpView: View {
             Entry(title: "Informazioni sul flusso",
                   text: "Tocca il video: insieme ai controlli compaiono risoluzione, fotogrammi al secondo, codec e audio.")
         ]),
+        ("Timeshift", [
+            Entry(title: "Come funziona",
+                  text: "Come il timeshift dei decoder Enigma2: la diretta viene scaricata con un'unica connessione in un file .ts circolare sul telefono e il player legge da li'. Puoi mettere in pausa, tornare indietro e riandare in diretta su qualunque canale TS."),
+            Entry(title: "Cambio canale",
+                  text: "Il buffer e' unico: cambiando canale continua a riempirsi con il nuovo canale. Tornando indietro nel tempo puoi ritrovare anche il canale precedente."),
+            Entry(title: "Spazio buffer",
+                  text: "Dimensione del file circolare (predefinito 4 GB, circa un'ora di FHD). Quando e' pieno sovrascrive i dati piu' vecchi. Il nuovo valore vale dopo \"Svuota buffer\"."),
+            Entry(title: "Registrare dal buffer",
+                  text: "Con il timeshift attivo, Registra segna l'inizio dal punto che stai guardando e copia i dati in un file permanente, senza aprire un'altra connessione. Cambiando canale la registrazione si ferma.")
+        ]),
         ("Catch-up (replay)", [
             Entry(title: "Filtro",
                   text: "\"Solo canali con replay\" mostra i canali per cui il provider conserva le puntate passate. \"Tutti i canali\" mostra anche quelli con sola guida."),

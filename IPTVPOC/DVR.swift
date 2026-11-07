@@ -19,6 +19,8 @@ final class DVRManager: ObservableObject {
     @AppStorage("dvr.limitMB") var limitMB: Int = 2048
     private var job: Task<Void, Never>?
     private var recorder: Task<(Int64, String), Never>?
+    private var bufferRecorder: BufferRecorder?
+    var isBufferRecording: Bool { bufferRecorder != nil }
     private var destination: URL?
 
     private var directory: URL {
@@ -26,7 +28,16 @@ final class DVRManager: ObservableObject {
         return root.appendingPathComponent("Recordings", isDirectory: true)
     }
 
-    init() { refresh() }
+    init() {
+        refresh()
+        TimeshiftManager.shared.onChannelChange = { [weak self] in self?.channelChanged() }
+    }
+
+    private func channelChanged() {
+        guard bufferRecorder != nil else { return }
+        stop()
+        status = "Registrazione fermata: cambio canale."
+    }
 
     func refresh() {
         do {
@@ -57,6 +68,34 @@ final class DVRManager: ObservableObject {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let name = "\(safeName)-\(formatter.string(from: Date())).ts"
         destination = directory.appendingPathComponent(name)
+        let timeshift = TimeshiftManager.shared
+        if timeshift.downloading, timeshift.channelID == channel.id, let output = destination {
+            let recorder = BufferRecorder()
+            bufferRecorder = recorder
+            let buffer = timeshift.buffer
+            let startOffset = timeshift.playbackOffset ?? buffer.end
+            let limit = Int64(limitMB) * 1_048_576
+            let name = channel.name
+            status = "Registrazione dal buffer di \(name)…"
+            let task = Task.detached(priority: .utility) { () -> (Int64, String) in
+                recorder.run(buffer: buffer, from: startOffset, to: output, limit: limit) { written in
+                    let size = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
+                    Task { @MainActor in DVRManager.shared.status = "Registrazione \(name) · \(size)" }
+                }
+            }
+            job = Task { [weak self] in
+                let (bytes, text) = await task.value
+                guard let self else { return }
+                if bytes == 0 { try? FileManager.default.removeItem(at: output) }
+                self.status = text
+                self.isRecording = false
+                self.destination = nil
+                self.bufferRecorder = nil
+                if !TimeshiftManager.shared.playerAttached { TimeshiftManager.shared.release(keepForRecording: false) }
+                self.refresh()
+            }
+            return
+        }
         let tsURL = [channel.url, channel.altURL].compactMap { $0 }
             .first { $0.pathExtension.lowercased() != "m3u8" }
         if let tsURL, let output = destination {
@@ -128,6 +167,12 @@ final class DVRManager: ObservableObject {
 
     func stop() {
         guard isRecording else { return }
+        if let bufferRecorder {
+            bufferRecorder.stop(at: TimeshiftManager.shared.buffer.end)
+            isRecording = false
+            status = "Chiusura registrazione…"
+            return
+        }
         recorder?.cancel()
         if recorder == nil { job?.cancel(); job = nil }
         isRecording = false

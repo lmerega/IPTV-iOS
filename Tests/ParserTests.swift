@@ -110,6 +110,28 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(StreamInfo.summary(width: 0, height: 0, fps: 0, videoCodec: "", audio: "", bitrate: 0))
     }
 
+    func testTimeshiftBufferWrapAround() throws {
+        let buffer = TimeshiftBuffer()
+        buffer.reset(capacity: 64_000_000)
+        let chunkSize = 1_000_000
+        for index in 0..<70 {
+            buffer.append(Data(repeating: UInt8(index % 251), count: chunkSize))
+        }
+        XCTAssertEqual(buffer.end, 70_000_000)
+        XCTAssertGreaterThan(buffer.oldest, 6_000_000)
+        let handle = try FileHandle(forReadingFrom: buffer.fileURL)
+        defer { try? handle.close() }
+        // l'ultimo blocco attraversa il punto di riavvolgimento del file
+        let last = buffer.read(handle: handle, offset: 69_000_000, max: chunkSize, timeout: 0.1)
+        XCTAssertEqual(last.data.count, chunkSize)
+        XCTAssertTrue(last.data.allSatisfy { $0 == 69 })
+        XCTAssertEqual(last.next, 70_000_000)
+        // un offset ormai sovrascritto viene portato al dato piu' vecchio disponibile
+        let old = buffer.read(handle: handle, offset: 0, max: 10, timeout: 0.1)
+        XCTAssertEqual(old.next - Int64(old.data.count), buffer.oldest)
+        buffer.reset(capacity: 64_000_000)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var network = NetworkDiagnostics()
+    @ObservedObject private var timeshift = TimeshiftManager.shared
     @State private var editing: IPTVSource?
     @State private var showNew = false
 
@@ -83,6 +84,21 @@ struct SettingsView: View {
                         Text("Automatico: AVPlayer per HLS/MP4, VLC per TS e formati non supportati; se AVPlayer fallisce passa a VLC.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                }
+
+                Section("Timeshift") {
+                    Toggle("Timeshift sulla diretta", isOn: $timeshift.enabled)
+                    Picker("Spazio buffer", selection: $timeshift.sizeGB) {
+                        Text("1 GB").tag(1)
+                        Text("2 GB").tag(2)
+                        Text("4 GB").tag(4)
+                        Text("8 GB").tag(8)
+                    }
+                    LabeledContent("Nel buffer", value: "\(timeshift.bufferedMinutes) min")
+                    LabeledContent("Spazio libero", value: ByteCountFormatter.string(fromByteCount: timeshift.freeSpace, countStyle: .file))
+                    Button("Svuota buffer", role: .destructive) { timeshift.clear() }
+                    Text("La diretta TS viene scaricata con un'unica connessione in un file circolare e riprodotta da li': pausa, ±30 s e ritorno alla diretta su tutti i canali. Il nuovo spazio vale dal prossimo svuotamento.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
 
                 Section("Rete") {

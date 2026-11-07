@@ -158,6 +158,7 @@ struct PlayerScreen: View {
                     Spacer()
                     VStack(spacing: 6) {
                         if let program = controller.catchupProgram { seekBar(program) }
+                        timeshiftBar
                         mediaBar
                         HStack(spacing: 34) {
                             skipButton(-30, "gobackward.30")
@@ -223,17 +224,45 @@ struct PlayerScreen: View {
         }
     }
 
+    @ViewBuilder private var timeshiftBar: some View {
+        if controller.tsActive, let range = controller.tsRange {
+            let total = max(1, range.upperBound.timeIntervalSince(range.lowerBound))
+            let value = min(max(0, controller.tsPosition.timeIntervalSince(range.lowerBound)), total)
+            Slider(value: Binding(get: { dragging ? scrub : value }, set: { scrub = $0 }), in: 0...total) { editing in
+                dragging = editing
+                if !editing { controller.seekTimeshift(to: range.lowerBound.addingTimeInterval(scrub)) }
+            }
+            HStack {
+                Text("Buffer \(clock(total))")
+                Spacer()
+                Text(controller.tsBehind < 10 ? "In diretta" : "-\(clock(controller.tsBehind))")
+            }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+
+    private var showLiveButton: Bool {
+        guard request.channel != nil else { return false }
+        if controller.tsActive { return controller.tsBehind > 10 }
+        return !controller.isLive
+    }
+
+    private func goLive() {
+        if controller.tsActive { controller.goLive() }
+        else { controller.play(request.url, fallback: request.channel?.altURL, live: true) }
+    }
+
     @ViewBuilder private var controls: some View {
         VStack(spacing: 8) {
             if let program = controller.catchupProgram { seekBar(program) }
+            timeshiftBar
             mediaBar
             HStack(spacing: 18) {
                 pauseButton.font(.title2)
                 skipButton(-30, "gobackward.30")
                 skipButton(30, "goforward.30")
                 Spacer()
-                if request.channel != nil && !controller.isLive {
-                    Button { controller.play(request.url, fallback: request.channel?.altURL, live: true) } label: {
+                if showLiveButton {
+                    Button { goLive() } label: {
                         Label("Diretta", systemImage: "dot.radiowaves.left.and.right").lineLimit(1).fixedSize()
                     }
                     .buttonStyle(.bordered).controlSize(.small)
