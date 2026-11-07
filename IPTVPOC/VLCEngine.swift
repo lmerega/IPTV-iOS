@@ -59,7 +59,7 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     private func handleState() {
         switch player.state {
         case .playing: onState?("VLC: in riproduzione"); onBuffering?(false)
-        case .buffering: onState?("VLC: buffering"); onBuffering?(true)
+        case .buffering: onBuffering?(!player.isPlaying)
         case .opening: onState?("VLC: apertura flusso"); onBuffering?(true)
         case .error: onState?("VLC: errore"); onError?()
         case .paused: onState?("VLC: pausa")

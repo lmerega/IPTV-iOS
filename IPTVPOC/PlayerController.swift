@@ -49,7 +49,11 @@ final class PlayerController: ObservableObject {
                 ? "Riproduzione non riuscita con VLC. Il flusso potrebbe non essere disponibile."
                 : "Motore VLC non incluso in questa build."
         }
-        vlc.onTime = { [weak self] seconds in self?.tick(seconds) }
+        vlc.onTime = { [weak self] seconds in
+            guard let self else { return }
+            if self.isBuffering { self.isBuffering = false; self.message = nil; self.log("VLC: immagini in arrivo") }
+            self.tick(seconds)
+        }
         vlc.onState = { [weak self] text in self?.log(text) }
     }
 

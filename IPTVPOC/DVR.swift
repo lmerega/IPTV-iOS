@@ -18,6 +18,7 @@ final class DVRManager: ObservableObject {
     @Published var recordingName = ""
     @AppStorage("dvr.limitMB") var limitMB: Int = 2048
     private var job: Task<Void, Never>?
+    private var recorder: Task<(Int64, String), Never>?
     private var destination: URL?
 
     private var directory: URL {
@@ -48,7 +49,7 @@ final class DVRManager: ObservableObject {
         guard !isRecording else { return }
         isRecording = true
         recordingName = channel.name
-        status = "Connessione al flusso HLS…"
+        status = "Connessione al flusso…"
         let safeName = channel.name.unicodeScalars.map {
             CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" ? String($0) : "_"
         }.joined().prefix(48)
@@ -56,15 +57,79 @@ final class DVRManager: ObservableObject {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let name = "\(safeName)-\(formatter.string(from: Date())).ts"
         destination = directory.appendingPathComponent(name)
-        job = Task { [weak self] in
-            await self?.recordHLS(channel.url)
+        let tsURL = [channel.url, channel.altURL].compactMap { $0 }
+            .first { $0.pathExtension.lowercased() != "m3u8" }
+        if let tsURL, let output = destination {
+            let limit = Int64(limitMB) * 1_048_576
+            let name = channel.name
+            let task = Task.detached(priority: .utility) { () -> (Int64, String) in
+                await DVRManager.recordTS(tsURL, to: output, limit: limit, name: name)
+            }
+            recorder = task
+            job = Task { [weak self] in
+                let (bytes, text) = await task.value
+                guard let self else { return }
+                if bytes == 0 { try? FileManager.default.removeItem(at: output) }
+                self.status = text
+                self.isRecording = false
+                self.destination = nil
+                self.recorder = nil
+                self.refresh()
+            }
+        } else {
+            job = Task { [weak self] in
+                await self?.recordHLS(channel.url)
+            }
+        }
+    }
+
+    /// Registra un flusso MPEG-TS continuo scrivendo direttamente su disco, a blocchi da 256 KB.
+    nonisolated static func recordTS(_ url: URL, to output: URL, limit: Int64, name: String) async -> (Int64, String) {
+        guard FileManager.default.createFile(atPath: output.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: output) else { return (0, "Impossibile creare il file DVR.") }
+        defer { try? handle.close() }
+        var written: Int64 = 0
+        var buffer = Data()
+        buffer.reserveCapacity(262_144)
+        var lastReport = Date()
+        func flush() {
+            guard !buffer.isEmpty else { return }
+            try? handle.write(contentsOf: buffer)
+            written += Int64(buffer.count)
+            buffer.removeAll(keepingCapacity: true)
+        }
+        do {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                return (0, "Il server ha rifiutato il flusso da registrare.")
+            }
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= 262_144 {
+                    flush()
+                    if written >= limit { return (written, "Limite di spazio raggiunto: registrazione salvata.") }
+                    if Date().timeIntervalSince(lastReport) > 1 {
+                        lastReport = Date()
+                        let size = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
+                        await MainActor.run { DVRManager.shared.status = "Registrazione \(name) · \(size)" }
+                    }
+                }
+            }
+            flush()
+            return (written, "Flusso terminato dal server: registrazione salvata.")
+        } catch {
+            flush()
+            if Task.isCancelled { return (written, "Registrazione interrotta e salvata.") }
+            return (written, written > 0 ? "Connessione persa: registrazione salvata." : "Registrazione non riuscita: flusso non disponibile.")
         }
     }
 
     func stop() {
         guard isRecording else { return }
-        job?.cancel()
-        job = nil
+        recorder?.cancel()
+        if recorder == nil { job?.cancel(); job = nil }
         isRecording = false
         destination = nil
         status = "Registrazione interrotta e salvata."
@@ -157,7 +222,7 @@ private enum RecorderError: LocalizedError {
 
 struct RecordingsView: View {
     @ObservedObject private var dvr = DVRManager.shared
-    @State private var playing: SavedRecording?
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
         NavigationStack {
@@ -176,7 +241,7 @@ struct RecordingsView: View {
                         Text("5 GB").tag(5120)
                         Text("10 GB").tag(10240)
                     }
-                    Text("Registra soltanto mentre l'app è attiva. Il DVR locale supporta flussi HLS MPEG-TS non cifrati. Alcuni server impediscono due connessioni simultanee.")
+                    Text("Registra soltanto mentre l'app è attiva. Supporta flussi MPEG-TS diretti e HLS non cifrati. La registrazione usa una connessione in più: il tuo account ne permette un numero limitato.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Registrazioni salvate") {
@@ -185,7 +250,7 @@ struct RecordingsView: View {
                                                description: Text("Durante un canale live usa il pulsante Registra."))
                     }
                     ForEach(dvr.files) { recording in
-                        Button { playing = recording } label: {
+                        Button { model.playing = PlayRequest(title: recording.name, url: recording.url) } label: {
                             VStack(alignment: .leading) {
                                 Text(recording.name).lineLimit(2)
                                 Text("\(recording.date.formatted()) · \(ByteCountFormatter.string(fromByteCount: recording.bytes, countStyle: .file))")
@@ -199,13 +264,6 @@ struct RecordingsView: View {
             }
             .navigationTitle("Registrazioni")
             .toolbar { Button("Aggiorna", systemImage: "arrow.clockwise") { dvr.refresh() } }
-            .sheet(item: $playing) { item in
-                NavigationStack {
-                    VideoPlayback(url: item.url)
-                        .navigationTitle(item.name).navigationBarTitleDisplayMode(.inline)
-                        .toolbar { Button("Chiudi") { playing = nil } }
-                }
-            }
         }
     }
 }

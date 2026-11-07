@@ -1,6 +1,11 @@
 import SwiftUI
 import AVKit
 
+private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
+    guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { return }
+    scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+}
+
 struct PlayerScreen: View {
     let request: PlayRequest
     @EnvironmentObject private var model: AppModel
@@ -11,6 +16,8 @@ struct PlayerScreen: View {
     @State private var showDiagnostics = false
     @State private var dragging = false
     @State private var scrub: Double = 0
+    @State private var fullscreen = false
+    @State private var overlayVisible = true
 
     private var visiblePrograms: [GuideProgram] {
         programs.filter { $0.start < Date().addingTimeInterval(12 * 3600) }
@@ -23,19 +30,57 @@ struct PlayerScreen: View {
     }
 
     var body: some View {
+        Group {
+            if fullscreen { fullscreenBody } else { normalBody }
+        }
+        .sheet(isPresented: $showDiagnostics) {
+            CatchupDiagnosticsView(controller: controller, channel: request.channel,
+                                   program: controller.catchupProgram)
+                .environmentObject(model)
+        }
+        .task { await start() }
+        .onDisappear {
+            controller.stop()
+            requestOrientation(.allButUpsideDown)
+        }
+    }
+
+    // MARK: Video
+
+    private var videoSurface: some View {
+        ZStack {
+            Color.black
+            if controller.engine == .vlc { VLCSurface(view: controller.vlc.view) }
+            else { VideoPlayer(player: controller.player) }
+            if controller.isBuffering && !controller.isPaused {
+                VStack(spacing: 8) {
+                    ProgressView().tint(.white)
+                    Text(controller.message ?? "Buffering…").font(.caption).foregroundStyle(.white)
+                }
+                .padding(12).background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+            } else if let text = controller.message {
+                Text(text).font(.footnote).foregroundStyle(.white).padding(10)
+                    .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 8)).padding()
+            }
+            if controller.isPaused {
+                Image(systemName: "pause.circle.fill").font(.system(size: 54)).foregroundStyle(.white.opacity(0.85))
+            }
+        }
+    }
+
+    // MARK: Layout normale
+
+    private var normalBody: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                ZStack {
-                    Color.black
-                    if controller.engine == .vlc { VLCSurface(view: controller.vlc.view) }
-                    else { VideoPlayer(player: controller.player) }
-                    if controller.isBuffering && controller.message == nil { ProgressView().tint(.white) }
-                    if let text = controller.message {
-                        Text(text).font(.footnote).foregroundStyle(.white).padding(10)
-                            .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 8)).padding()
+                videoSurface
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .overlay(alignment: .topTrailing) {
+                        Button { setFullscreen(true) } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .padding(8).background(.black.opacity(0.55), in: Circle()).foregroundStyle(.white)
+                        }.padding(8)
                     }
-                }
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
 
                 controls.padding(.horizontal).padding(.top, 8)
 
@@ -65,36 +110,84 @@ struct PlayerScreen: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Chiudi") { dismiss() } }
             }
-            .sheet(isPresented: $showDiagnostics) {
-                CatchupDiagnosticsView(controller: controller, channel: request.channel,
-                                       program: controller.catchupProgram)
-                    .environmentObject(model)
-            }
-            .task { await start() }
-            .onDisappear { controller.stop() }
         }
+    }
+
+    // MARK: Schermo intero
+
+    private var fullscreenBody: some View {
+        ZStack {
+            videoSurface.ignoresSafeArea()
+            Color.clear.contentShape(Rectangle())
+                .onTapGesture { withAnimation { overlayVisible.toggle() } }
+            if overlayVisible {
+                VStack {
+                    HStack {
+                        Text(request.title).font(.headline).lineLimit(1)
+                        Spacer()
+                        Button { setFullscreen(false) } label: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left").font(.title3)
+                        }
+                    }
+                    .padding().background(.black.opacity(0.55))
+                    Spacer()
+                    VStack(spacing: 6) {
+                        if let program = controller.catchupProgram { seekBar(program) }
+                        HStack(spacing: 34) {
+                            skipButton(-30, "gobackward.30")
+                            pauseButton.font(.largeTitle)
+                            skipButton(30, "goforward.30")
+                        }
+                    }
+                    .padding().background(.black.opacity(0.55))
+                }
+                .foregroundStyle(.white)
+            }
+        }
+        .statusBarHidden(true)
+        .background(Color.black.ignoresSafeArea())
+    }
+
+    private func setFullscreen(_ on: Bool) {
+        fullscreen = on
+        overlayVisible = true
+        requestOrientation(on ? .landscape : .allButUpsideDown)
+    }
+
+    // MARK: Controlli
+
+    private var pauseButton: some View {
+        Button { controller.togglePause() } label: {
+            Image(systemName: controller.isPaused ? "play.fill" : "pause.fill")
+        }
+    }
+
+    private func skipButton(_ delta: Double, _ icon: String) -> some View {
+        Button { controller.skip(delta) } label: { Image(systemName: icon).font(.title2) }
+            .disabled(!controller.canSkip)
+    }
+
+    @ViewBuilder private func seekBar(_ program: GuideProgram) -> some View {
+        let total = max(1, program.end.timeIntervalSince(program.start))
+        Slider(value: Binding(get: { dragging ? scrub : min(controller.position, total) },
+                              set: { scrub = $0 }), in: 0...total) { editing in
+            dragging = editing
+            if !editing { controller.seekCatchup(to: scrub) }
+        }
+        HStack {
+            Text(clock(dragging ? scrub : controller.position))
+            Spacer()
+            Text(clock(total))
+        }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
     }
 
     @ViewBuilder private var controls: some View {
         VStack(spacing: 8) {
-            if let program = controller.catchupProgram {
-                let total = max(1, program.end.timeIntervalSince(program.start))
-                Slider(value: Binding(get: { dragging ? scrub : min(controller.position, total) },
-                                      set: { scrub = $0 }), in: 0...total) { editing in
-                    dragging = editing
-                    if !editing { controller.seekCatchup(to: scrub) }
-                }
-                HStack {
-                    Text(clock(dragging ? scrub : controller.position))
-                    Spacer()
-                    Text(clock(total))
-                }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
+            if let program = controller.catchupProgram { seekBar(program) }
             HStack(spacing: 22) {
-                Button { controller.skip(-30) } label: { Image(systemName: "gobackward.30").font(.title2) }
-                    .disabled(!controller.canSkip)
-                Button { controller.skip(30) } label: { Image(systemName: "goforward.30").font(.title2) }
-                    .disabled(!controller.canSkip)
+                pauseButton.font(.title2)
+                skipButton(-30, "gobackward.30")
+                skipButton(30, "goforward.30")
                 if request.channel != nil {
                     Button { controller.play(request.url, fallback: request.channel?.altURL) } label: {
                         Label("Diretta", systemImage: "dot.radiowaves.left.and.right")
@@ -110,9 +203,7 @@ struct PlayerScreen: View {
                             .buttonStyle(.bordered)
                     }
                 }
-                if request.channel != nil {
-                    Button { showDiagnostics = true } label: { Image(systemName: "stethoscope") }
-                }
+                Button { showDiagnostics = true } label: { Image(systemName: "stethoscope") }
             }
             Text(controller.engine == .vlc ? "Motore: VLC" : "Motore: AVPlayer (AirPlay disponibile)")
                 .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -136,6 +227,7 @@ struct PlayerScreen: View {
         controller.enginePreference = model.current?.engine ?? "auto"
         controller.sourceProvider = { model.current }
         controller.onVariantResolved = { model.setCatchupVariant($0) }
+        controller.log("Avvio riproduzione")
         if let channel = request.channel, let program = request.program, let source = model.current {
             await controller.playCatchup(source: source, channel: channel, program: program, offset: 0)
         } else {
@@ -152,6 +244,11 @@ struct CatchupDiagnosticsView: View {
     let program: GuideProgram?
     @State private var running = false
     @Environment(\.dismiss) private var dismiss
+
+    private var zoneLabel: String {
+        let zone = model.current?.serverTimeZone ?? ""
+        return zone.isEmpty ? "UTC (non rilevato)" : zone
+    }
 
     var body: some View {
         NavigationStack {
@@ -184,16 +281,21 @@ struct CatchupDiagnosticsView: View {
                     Text("Il test usa il programma in riproduzione, oppure un programma di 3 ore fa.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                Section("Log riproduzione") {
+                    if controller.logLines.isEmpty { Text("Nessun evento").foregroundStyle(.secondary) }
+                    ForEach(Array(controller.logLines.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.caption.monospaced())
+                    }
+                    Button("Copia log", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = controller.logLines.joined(separator: "\n")
+                    }
+                    Text("Il log non contiene host, utente o password.").font(.footnote).foregroundStyle(.secondary)
+                }
             }
             .navigationTitle("Diagnostica replay")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Chiudi") { dismiss() } }
         }
-    }
-
-    private var zoneLabel: String {
-        let zone = model.current?.serverTimeZone ?? ""
-        return zone.isEmpty ? "UTC (non rilevato)" : zone
     }
 
     private func run() async {
