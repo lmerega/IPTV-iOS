@@ -11,3 +11,6 @@ DerivedData/
 *.secrets
 *.log
 private-playlists/
+
+# Local downloaded build artifacts
+/releases/
