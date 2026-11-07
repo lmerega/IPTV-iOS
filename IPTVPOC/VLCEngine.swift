@@ -14,8 +14,8 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     var onTime: ((Double) -> Void)?
     var onState: ((String) -> Void)?
     var isPlaying: Bool { player.isPlaying }
-    /// Riempi lo schermo: ritaglia il video alle proporzioni della vista invece di lasciare bande nere.
-    var fill = false { didSet { if fill != oldValue { lastCrop = nil; applyCrop() } } }
+    /// Formato del video (adatta, riempi, stira, 16:9, 4:3, 21:9).
+    var aspect: VideoAspect = .fit { didSet { if aspect != oldValue { lastCrop = nil; applyCrop() } } }
     private var lastCrop: String?
 
     override init() {
@@ -26,17 +26,39 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         (view as? VLCContainerView)?.onLayout = { [weak self] in self?.applyCrop() }
     }
 
+    /// Proporzioni della vista ridotte ai minimi termini (es. 2556:1179 -> 852:393).
+    private var viewRatio: String? {
+        var width = Int(view.bounds.width.rounded()), height = Int(view.bounds.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+        var a = width, b = height
+        while b != 0 { (a, b) = (b, a % b) }
+        width /= a; height /= a
+        return "\(width):\(height)"
+    }
+
+    private func setString(_ value: String?, _ apply: (UnsafeMutablePointer<CChar>?) -> Void) {
+        if let value { value.withCString { apply(UnsafeMutablePointer(mutating: $0)) } } else { apply(nil) }
+    }
+
+    /// Applica il formato: "riempi" ritaglia alle proporzioni dello schermo, "stira" forza le proporzioni
+    /// dello schermo (deforma), i formati fissi forzano 16:9, 4:3 o 21:9.
     private func applyCrop() {
-        let size = view.bounds.size
-        let crop: String? = fill && size.width > 0 && size.height > 0
-            ? "\(Int(size.width.rounded())):\(Int(size.height.rounded()))" : nil
-        guard crop != lastCrop || crop == nil else { return }
-        lastCrop = crop
-        if let crop {
-            crop.withCString { player.videoCropGeometry = UnsafeMutablePointer(mutating: $0) }
-        } else {
-            player.videoCropGeometry = nil
+        let screen = viewRatio
+        var ratio: String?
+        var crop: String?
+        switch aspect {
+        case .fit: break
+        case .fill: crop = screen
+        case .stretch: ratio = screen
+        default: ratio = aspect.ratio
         }
+        if (aspect == .fill || aspect == .stretch) && screen == nil { return }
+        let key = "\(ratio ?? "-")|\(crop ?? "-")"
+        guard key != lastCrop else { return }
+        lastCrop = key
+        setString(ratio) { player.videoAspectRatio = $0 }
+        setString(crop) { player.videoCropGeometry = $0 }
+        player.scaleFactor = 0
     }
 
     // MARK: Tracce audio e sottotitoli
@@ -68,8 +90,6 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         let caching = url.host == "127.0.0.1" ? 600 : 1500
         media.addOptions(["network-caching": caching, "clock-jitter": 0, "clock-synchro": 0])
         player.media = media
-        player.videoAspectRatio = nil
-        player.scaleFactor = 0
         lastCrop = nil
         onBuffering?(true)
         player.play()
@@ -176,7 +196,7 @@ final class VLCEngine: NSObject {
     func streamSummary() -> String? { nil }
     func seek(to seconds: Double) {}
     func jump(_ delta: Int32) {}
-    var fill = false
+    var aspect: VideoAspect = .fit
     var audioTracks: [MediaTrack] { [] }
     var subtitleTracks: [MediaTrack] { [] }
     var currentAudio: Int32 { -1 }

@@ -104,6 +104,31 @@ struct OnDemandItem: Identifiable, Hashable {
     var added: Double = 0
 }
 
+/// Formato del video, come in Smarters: adatta, riempi, stira o proporzioni fisse.
+enum VideoAspect: String, CaseIterable, Identifiable {
+    case fit, fill, stretch, r16x9, r4x3, r21x9
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .fit: return "Adatta (originale)"
+        case .fill: return "Riempi (taglia i bordi)"
+        case .stretch: return "Stira (tutto lo schermo)"
+        case .r16x9: return "16:9"
+        case .r4x3: return "4:3"
+        case .r21x9: return "21:9 (cinema)"
+        }
+    }
+    /// Proporzioni forzate (VLC), se il formato ne prevede.
+    var ratio: String? {
+        switch self {
+        case .r16x9: return "16:9"
+        case .r4x3: return "4:3"
+        case .r21x9: return "21:9"
+        default: return nil
+        }
+    }
+}
+
 /// Traccia audio o sottotitoli selezionabile nel player.
 struct MediaTrack: Identifiable, Hashable {
     let id: Int32
