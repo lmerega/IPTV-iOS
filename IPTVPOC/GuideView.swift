@@ -3,7 +3,7 @@ import SwiftUI
 struct GuideView: View {
     @EnvironmentObject private var model: AppModel
     @State private var search = ""
-    @State private var onlyReplay = true
+    @SceneStorage("guide.onlyReplay") private var onlyReplay = true
 
     private var filtered: [IPTVChannel] {
         model.channels.filter { channel in

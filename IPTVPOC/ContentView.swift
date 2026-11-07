@@ -72,20 +72,17 @@ struct RecordingBanner: View {
 struct ChannelLogo: View {
     let url: String?
     var body: some View {
-        AsyncImage(url: URL(string: url ?? "")) { phase in
-            switch phase {
-            case .success(let image): image.resizable().scaledToFit()
-            default: Image(systemName: "tv").foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 42, height: 42)
+        // Loghi in cache: tornando sulla scheda Live non vengono riscaricati.
+        RemoteImage(url: URL(string: url ?? ""), fit: true, placeholder: "tv")
+            .frame(width: 42, height: 42)
     }
 }
 
 struct LiveView: View {
     @EnvironmentObject private var model: AppModel
     @State private var search = ""
-    @State private var group = "Tutti"
+    /// Categoria ricordata anche quando iOS ricrea la scheda (cambio tra Live, Film e Serie).
+    @SceneStorage("live.group") private var group = "Tutti"
     @State private var showEditor = false
 
     private var groups: [String] {

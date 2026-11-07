@@ -64,6 +64,11 @@ struct OnDemandCatalog {
 final class OnDemandStore {
     static let shared = OnDemandStore()
     private var catalogs: [String: OnDemandCatalog] = [:]
+    /// Ultimo elenco mostrato per scheda: tornando sulla scheda compare subito, senza griglia vuota.
+    private var lastShown: [String: (key: String, items: [OnDemandItem])] = [:]
+
+    func shown(kind: String) -> (key: String, items: [OnDemandItem])? { lastShown[kind] }
+    func setShown(_ items: [OnDemandItem], key: String, kind: String) { lastShown[kind] = (key, items) }
 
     func catalog(_ key: String) -> OnDemandCatalog? { catalogs[key] }
 
@@ -82,7 +87,14 @@ struct OnDemandView: View {
     @State private var failure: String?
     @State private var search = ""
     @State private var query = ""
-    @State private var category = OnDemandCatalog.all
+    @SceneStorage private var category: String
+
+    init(kind: OnDemandKind) {
+        self.kind = kind
+        // Categoria ricordata anche se iOS ricrea la scheda.
+        _category = SceneStorage(wrappedValue: OnDemandCatalog.all,
+                                 kind == .movies ? "movies.category" : "series.category")
+    }
     @State private var loadedKey = ""
     @State private var shownKey = ""
 
@@ -144,7 +156,11 @@ struct OnDemandView: View {
                 let result = await Task.detached(priority: .userInitiated) {
                     snapshot.filter(category: selected, query: text)
                 }.value
-                if !Task.isCancelled { shown = result; shownKey = key }
+                if !Task.isCancelled {
+                    shown = result
+                    shownKey = key
+                    OnDemandStore.shared.setShown(result, key: key, kind: kindKey)
+                }
             }
         }
     }
@@ -171,6 +187,10 @@ struct OnDemandView: View {
         if loadedKey == key && !catalog.items.isEmpty { return }
         if let saved = OnDemandStore.shared.catalog(key) {
             shownKey = ""
+            if let last = OnDemandStore.shared.shown(kind: kindKey) {
+                shown = last.items
+                shownKey = last.key
+            }
             catalog = saved
             loadedKey = key
             return
@@ -235,15 +255,20 @@ final class ImageCache {
 
 struct RemoteImage: View {
     let url: URL?
+    var fit = false
+    var placeholder = "photo"
     @State private var image: UIImage?
 
     var body: some View {
         ZStack {
             if let image {
-                Image(uiImage: image).resizable().scaledToFill()
+                if fit { Image(uiImage: image).resizable().scaledToFit() }
+                else { Image(uiImage: image).resizable().scaledToFill() }
+            } else if fit {
+                Image(systemName: placeholder).foregroundStyle(.secondary)
             } else {
                 Rectangle().fill(.quaternary)
-                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+                    .overlay(Image(systemName: placeholder).foregroundStyle(.secondary))
             }
         }
         .task(id: url) {
