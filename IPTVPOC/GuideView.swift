@@ -18,7 +18,7 @@ struct GuideView: View {
                 NavigationLink(value: channel) { ChannelRow(channel: channel) }
             }
             .listStyle(.plain)
-            .navigationTitle("Guida e replay")
+            .navigationTitle("Catch-up")
             .navigationDestination(for: IPTVChannel.self) { ChannelGuideView(channel: $0) }
             .searchable(text: $search, prompt: "Cerca un canale")
             .toolbar {

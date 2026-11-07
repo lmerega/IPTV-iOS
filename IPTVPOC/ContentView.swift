@@ -6,7 +6,7 @@ struct ContentView: View {
     var body: some View {
         TabView {
             Tab("Live", systemImage: "antenna.radiowaves.left.and.right") { LiveView() }
-            Tab("Guida", systemImage: "calendar") { GuideView() }
+            Tab("Catch-up", systemImage: "clock.arrow.circlepath") { GuideView() }
             Tab("Film", systemImage: "film") { OnDemandView(kind: .movies) }
             Tab("Serie", systemImage: "tv") { OnDemandView(kind: .series) }
             Tab("Registrazioni", systemImage: "record.circle") { RecordingsView() }
