@@ -3,6 +3,14 @@ Ultimo aggiornamento: 7 novembre 2026. Lingua di lavoro: italiano.
 
 > **LEGGI PRIMA DI CAMBIARE QUALSIASI COSA.** Questo README documenta informazioni verificate, stato effettivo del repository e requisiti del proprietario. Non confondere funzionalita' pianificate, codice locale incompleto, build GitHub riuscite e test superati su dispositivo. Il proprietario vuole che tu finisca il prodotto, produca UNA build ragionevolmente completa e ne organizzi la verifica, NON che chieda di reinstallare decine di prototipi.
 
+## STATO AGGIORNATO (7 novembre 2026, v0.3)
+
+- Codice integrato e pushato su `main`; CI run **42368698205** verde: build IPA + 7 unit test (parser M3U, JSON Xtream, URL catch-up, XMLTV/gzip) su simulatore.
+- IPA: `D:\IPTV-iOS\releases\IPTVPOC-0.3-build5.ipa` (SHA256 `f07b7e77861e10fc090077e8f8d8a6514d2728f882ea8c2c195e2c4fbce026de`). Bundle ID invariato. NON ancora installata ne' provata su flussi reali.
+- Implementato (non verificato su dispositivo): multi-sorgente in Keychain (migrazione dalla singola), tab Live/Guida/Film/Serie/Registrazioni/Impostazioni (sidebar su iPad), preferiti, now/next, guida per canale, replay con formati multipli + probe automatico + diagnostica, offset/timezone, seek replay, VOD/serie Xtream, XMLTV (.gz) per M3U, DVR foreground HLS (sperimentale), diagnostica Tailscale, AirPlay via player nativo, ATS e UIFileSharing in Info.plist.
+- Limiti noti: TS diretto non garantito su AVPlayer; XMLTV intero in RAM; DVR solo HLS TS non cifrato, file `.ts` registrati forse non riproducibili da AVPlayer; PiP non configurato; nessuna cache canali su disco.
+- Le sezioni 3 e 8 sotto sono storiche: valgono questa sezione e il codice.
+
 ## 0. Obiettivo e priorita' dell'utente
 
 Creare un'alternativa iOS a Smarters Player Pro, dall'interfaccia bella, pulita e reattiva, per **iPhone e iPad iOS 18+**, solo uso personale e pochi dispositivi. Necessarie:
