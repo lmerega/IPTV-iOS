@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject private var timeshift = TimeshiftManager.shared
     @State private var editing: IPTVSource?
     @State private var showNew = false
+    @State private var showKeyEditor = false
 
     private var hlsLabel: String {
         switch model.current?.hlsSupported {
@@ -122,6 +123,8 @@ struct SettingsView: View {
 
                 Section("Informazioni") {
                     LabeledContent("Versione", value: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
+                        .contentShape(Rectangle())
+                        .onLongPressGesture(minimumDuration: 1.2) { showKeyEditor = true }
                     Text("DVR e replay sono sperimentali. Le credenziali sono nel Keychain del dispositivo.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -129,6 +132,34 @@ struct SettingsView: View {
             .navigationTitle("Impostazioni")
             .sheet(isPresented: $showNew) { ProfileEditor(profile: nil) }
             .sheet(item: $editing) { ProfileEditor(profile: $0) }
+            .sheet(isPresented: $showKeyEditor) { HiddenKeyEditor() }
+        }
+    }
+}
+
+/// Campo nascosto (pressione prolungata su "Versione"): chiave del servizio di invio log.
+struct HiddenKeyEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var key = ""
+    private let configured = OneClipKey.load() != nil
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField(configured ? "Chiave gia' impostata" : "Chiave", text: $key)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                }
+                Section {
+                    Button("Salva") { OneClipKey.save(key); dismiss() }.disabled(key.isEmpty)
+                    if configured {
+                        Button("Rimuovi", role: .destructive) { OneClipKey.save(nil); dismiss() }
+                    }
+                }
+            }
+            .navigationTitle("Chiave diagnostica")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Annulla") { dismiss() } }
         }
     }
 }
