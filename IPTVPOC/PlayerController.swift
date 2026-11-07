@@ -15,6 +15,9 @@ final class PlayerController: ObservableObject {
     @Published var position: Double = 0
     @Published var probeResults: [CatchupProbeResult] = []
     @Published var isPaused = false
+    @Published var isLive = false
+    @Published var duration: Double = 0
+    @Published var currentTime: Double = 0
     @Published var logLines: [String] = []
 
     var channel: IPTVChannel?
@@ -30,7 +33,14 @@ final class PlayerController: ObservableObject {
     private var currentURL: URL?
     private var triedVLC = false
 
-    var canSkip: Bool { catchupProgram != nil || engine == .avplayer }
+    var canSkip: Bool {
+        if catchupProgram != nil { return true }
+        if isLive { return channel?.archive == true || engine == .avplayer }
+        return true
+    }
+
+    /// Barra di avanzamento per file e VOD riprodotti da VLC (AVPlayer ha i controlli nativi).
+    var showsMediaBar: Bool { catchupProgram == nil && !isLive && engine == .vlc && duration > 0 }
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -80,7 +90,10 @@ final class PlayerController: ObservableObject {
     }
 
     private func tick(_ seconds: Double) {
-        guard catchupProgram != nil, seconds.isFinite else { return }
+        guard seconds.isFinite else { return }
+        currentTime = seconds
+        if engine == .vlc && duration <= 0 { duration = vlc.lengthSeconds }
+        guard catchupProgram != nil else { return }
         position = streamOffset + seconds
     }
 
@@ -145,9 +158,12 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    func play(_ url: URL, fallback: URL? = nil) {
+    func play(_ url: URL, fallback: URL? = nil, live: Bool = false) {
         generation += 1
         catchupProgram = nil
+        isLive = live
+        duration = 0
+        currentTime = 0
         fallbackURL = fallback
         triedVLC = false
         load(url)
@@ -157,6 +173,7 @@ final class PlayerController: ObservableObject {
         generation += 1
         let mine = generation
         catchupProgram = program
+        isLive = false
         streamOffset = offset
         position = offset
         isBuffering = true
@@ -199,7 +216,8 @@ final class PlayerController: ObservableObject {
     func seekCatchup(to target: Double) {
         guard let program = catchupProgram, let source = sourceProvider?(), let channel else { return }
         let total = program.end.timeIntervalSince(program.start)
-        let clamped = min(max(0, target), max(0, total - 5))
+        let available = min(total - 5, Date().timeIntervalSince(program.start) - 10)
+        let clamped = min(max(0, target), max(0, available))
         let local = clamped - streamOffset
         if engine == .avplayer, local >= 0, let ranges = player.currentItem?.seekableTimeRanges {
             let time = CMTime(seconds: local, preferredTimescale: 600)
@@ -214,10 +232,25 @@ final class PlayerController: ObservableObject {
     func skip(_ delta: Double) {
         if catchupProgram != nil {
             seekCatchup(to: position + delta)
-        } else if engine == .avplayer {
+        } else if isLive, delta < 0, let channel, channel.archive, let source = sourceProvider?() {
+            // Differita: riparte dall'archivio del canale poco prima di adesso.
+            let now = Date()
+            let program = GuideProgram(id: "differita-\(Int(now.timeIntervalSince1970))", title: "Differita",
+                                       channelID: channel.id, start: now.addingTimeInterval(-3 * 3600),
+                                       end: now.addingTimeInterval(3600), description: "", hasArchive: true)
+            log("Differita di \(Int(-delta)) s")
+            Task { await playCatchup(source: source, channel: channel, program: program, offset: 3 * 3600 + delta) }
+        } else if engine == .vlc {
+            vlc.jump(Int32(delta))
+        } else {
             let target = max(0, player.currentTime().seconds + delta)
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
+    }
+
+    func seekMedia(to seconds: Double) {
+        if engine == .vlc { vlc.seek(to: seconds) }
+        else { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     }
 
     func stop() {

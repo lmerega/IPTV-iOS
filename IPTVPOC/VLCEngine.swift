@@ -45,6 +45,16 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         if player.isPlaying { player.pause() } else { player.play() }
     }
 
+    var lengthSeconds: Double { Double(player.media?.length.intValue ?? 0) / 1000.0 }
+
+    func seek(to seconds: Double) {
+        player.time = VLCTime(int: Int32(max(0, seconds) * 1000))
+    }
+
+    func jump(_ delta: Int32) {
+        if delta > 0 { player.jumpForward(delta) } else { player.jumpBackward(-delta) }
+    }
+
     nonisolated func mediaPlayerStateChanged(_ aNotification: Notification!) {
         Task { @MainActor [weak self] in self?.handleState() }
     }
@@ -83,6 +93,9 @@ final class VLCEngine: NSObject {
     func stop() {}
     func teardown() {}
     func togglePause() {}
+    var lengthSeconds: Double { 0 }
+    func seek(to seconds: Double) {}
+    func jump(_ delta: Int32) {}
 }
 #endif
 

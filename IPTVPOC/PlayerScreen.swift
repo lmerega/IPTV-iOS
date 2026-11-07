@@ -133,6 +133,7 @@ struct PlayerScreen: View {
                     Spacer()
                     VStack(spacing: 6) {
                         if let program = controller.catchupProgram { seekBar(program) }
+                        mediaBar
                         HStack(spacing: 34) {
                             skipButton(-30, "gobackward.30")
                             pauseButton.font(.largeTitle)
@@ -181,29 +182,51 @@ struct PlayerScreen: View {
         }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
     }
 
+    @ViewBuilder private var mediaBar: some View {
+        if controller.showsMediaBar {
+            let total = max(1, controller.duration)
+            Slider(value: Binding(get: { dragging ? scrub : min(controller.currentTime, total) },
+                                  set: { scrub = $0 }), in: 0...total) { editing in
+                dragging = editing
+                if !editing { controller.seekMedia(to: scrub) }
+            }
+            HStack {
+                Text(clock(dragging ? scrub : controller.currentTime))
+                Spacer()
+                Text(clock(total))
+            }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+
     @ViewBuilder private var controls: some View {
         VStack(spacing: 8) {
             if let program = controller.catchupProgram { seekBar(program) }
-            HStack(spacing: 22) {
+            mediaBar
+            HStack(spacing: 18) {
                 pauseButton.font(.title2)
                 skipButton(-30, "gobackward.30")
                 skipButton(30, "goforward.30")
-                if request.channel != nil {
-                    Button { controller.play(request.url, fallback: request.channel?.altURL) } label: {
-                        Label("Diretta", systemImage: "dot.radiowaves.left.and.right")
-                    }.buttonStyle(.bordered)
-                }
                 Spacer()
+                if request.channel != nil && !controller.isLive {
+                    Button { controller.play(request.url, fallback: request.channel?.altURL, live: true) } label: {
+                        Label("Diretta", systemImage: "dot.radiowaves.left.and.right").lineLimit(1).fixedSize()
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
                 if let channel = request.channel, controller.catchupProgram == nil {
                     if dvr.isRecording {
-                        Button(role: .destructive) { dvr.stop() } label: { Label("Stop", systemImage: "stop.circle") }
-                            .buttonStyle(.bordered)
+                        Button(role: .destructive) { dvr.stop() } label: {
+                            Label("Stop", systemImage: "stop.circle.fill").lineLimit(1).fixedSize()
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
                     } else {
-                        Button { dvr.start(channel: channel) } label: { Label("Registra", systemImage: "record.circle") }
-                            .buttonStyle(.bordered)
+                        Button { dvr.start(channel: channel) } label: {
+                            Label("Registra", systemImage: "record.circle").lineLimit(1).fixedSize()
+                        }
+                        .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
                 }
-                Button { showDiagnostics = true } label: { Image(systemName: "stethoscope") }
+                Button { showDiagnostics = true } label: { Image(systemName: "stethoscope").font(.title3) }
             }
             Text(controller.engine == .vlc ? "Motore: VLC" : "Motore: AVPlayer (AirPlay disponibile)")
                 .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
@@ -216,7 +239,7 @@ struct PlayerScreen: View {
     private func select(_ program: GuideProgram) {
         guard let channel = request.channel, let source = model.current else { return }
         if program.isLive {
-            controller.play(request.url, fallback: request.channel?.altURL)
+            controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
         } else if model.canReplay(program, channel: channel) {
             Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
         }
@@ -231,7 +254,7 @@ struct PlayerScreen: View {
         if let channel = request.channel, let program = request.program, let source = model.current {
             await controller.playCatchup(source: source, channel: channel, program: program, offset: 0)
         } else {
-            controller.play(request.url, fallback: request.channel?.altURL)
+            controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
         }
         if let channel = request.channel { programs = await model.guide(for: channel) }
     }
