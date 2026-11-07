@@ -31,6 +31,9 @@ final class PlayerController: ObservableObject {
     private var lastReportedTime: Double = 0
     private var estimatedTime: Double = 0
     private var heartbeatCount = 0
+    private var lastStateText = ""
+    private var stalledTicks = 0
+    var currentURL: URL?
     private var lastInfoUpdate = Date.distantPast
     @Published var logLines: [String] = []
 
@@ -84,7 +87,14 @@ final class PlayerController: ObservableObject {
             if self.isBuffering { self.isBuffering = false; self.message = nil; self.log("VLC: immagini in arrivo") }
             self.advance(reported: seconds)
         }
-        vlc.onState = { [weak self] text in self?.log(text) }
+        vlc.onState = { [weak self] text in
+            guard let self else { return }
+            // VLC ripete lo stesso stato piu' volte: nel log basta una riga.
+            if self.lastStateText == text { return }
+            self.lastStateText = text
+            self.log(text)
+            if text.hasSuffix("fine flusso") { self.log("Fine a \(Self.clock(self.currentTime)) (posizione \(Int(self.vlc.position * 100))%)") }
+        }
         heartbeat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.heartbeatTick() }
         }
@@ -114,15 +124,39 @@ final class PlayerController: ObservableObject {
             let reported = vlc.timeSeconds
             if reported != lastReportedTime {
                 advance(reported: reported)
+                if stalledTicks >= 4 { log("Riparte a \(Self.clock(currentTime))") }
+                stalledTicks = 0
             } else if playing && !isPaused && (tsActive || isLive) {
                 estimatedTime += 1
                 tick(estimatedTime)
+            } else if !isPaused && !tsActive && !isLive && catchupProgram == nil {
+                // File o film fermo: annota dove e perche' (utile per i file ancora in scrittura).
+                stalledTicks += 1
+                if stalledTicks == 4 { logStall() }
             }
         }
         if tsActive && heartbeatCount % 10 == 0 {
             let timeshift = TimeshiftManager.shared
             log("Buffer: \(timeshift.buffer.end / 1_048_576) MB, \(timeshift.bufferedMinutes) min, indietro \(Int(tsBehind)) s")
         }
+    }
+
+    static func clock(_ seconds: Double) -> String {
+        let total = Int(max(0, seconds))
+        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
+                             : String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func logStall() {
+        var parts = ["Fermo a \(Self.clock(currentTime))", "posizione \(Int(vlc.position * 100))%",
+                     "durata VLC \(Int(vlc.lengthSeconds)) s", "stato \(lastStateText)"]
+        if let known = knownDuration { parts.append("durata salvata \(Int(known)) s") }
+        if let url = currentURL, url.isFileURL {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            parts.append("file \(size / 1_048_576) MB")
+            if DVRManager.shared.activeFile == url { parts.append("FILE ANCORA IN REGISTRAZIONE") }
+        }
+        log(parts.joined(separator: ", "))
     }
 
     func log(_ text: String) {
@@ -215,6 +249,9 @@ final class PlayerController: ObservableObject {
         estimatedTime = 0
         isPaused = false
         log("Apro \(describe(url)) con \(chosen == .vlc ? "VLC" : "AVPlayer")")
+        currentURL = url
+        stalledTicks = 0
+        lastStateText = ""
         if chosen == .vlc {
             player.pause()
             player.replaceCurrentItem(with: nil)

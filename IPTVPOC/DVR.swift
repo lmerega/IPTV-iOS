@@ -41,7 +41,22 @@ final class DVRManager: ObservableObject {
     private var recorder: Task<(Int64, String), Never>?
     private var bufferRecorder: BufferRecorder?
     var isBufferRecording: Bool { bufferRecorder != nil }
-    private var destination: URL?
+    @Published private var destination: URL?
+    /// File che si sta scrivendo adesso.
+    var activeFile: URL? { destination }
+
+    /// Riepilogo per il log di diagnostica.
+    var diagnostics: String {
+        guard isRecording else { return "Registrazione: nessuna (\(status))" }
+        var parts = ["Registrazione: in corso \(recordingName)", isBufferRecording ? "dal buffer" : "connessione diretta",
+                     "da \(Int(Date().timeIntervalSince(startedAt))) s"]
+        if let destination {
+            let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            parts.append("file \(size / 1_048_576) MB")
+        }
+        if let stopDate { parts.append("stop alle \(stopDate.formatted(date: .omitted, time: .shortened))") }
+        return parts.joined(separator: ", ")
+    }
 
     private var directory: URL {
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -394,16 +409,32 @@ struct RecordingsView: View {
                     }
                     ForEach(dvr.files) { recording in
                         let info = recording.info
+                        let writing = recording.url == dvr.activeFile
                         Button {
-                            model.playing = PlayRequest(title: info?.channel ?? recording.name, url: recording.url,
-                                                        knownDuration: info?.duration)
+                            if writing {
+                                // Ancora in scrittura: si guarda dal buffer timeshift, dall'inizio della registrazione.
+                                if dvr.isBufferRecording, let channel = dvr.recordingChannel {
+                                    model.playing = PlayRequest(title: channel.name, url: channel.url, channel: channel,
+                                                                fromRecordingStart: true)
+                                }
+                            } else {
+                                model.playing = PlayRequest(title: info?.channel ?? recording.name, url: recording.url,
+                                                            knownDuration: info?.duration)
+                            }
                         } label: {
                             VStack(alignment: .leading) {
                                 Text(info?.channel ?? recording.name).lineLimit(2)
-                                Text(Self.caption(recording, info))
-                                    .font(.caption).foregroundStyle(.secondary)
+                                if writing {
+                                    Text(dvr.isBufferRecording ? "In registrazione · tocca per guardarla dall'inizio"
+                                                               : "In registrazione · disponibile al termine")
+                                        .font(.caption).foregroundStyle(.red)
+                                } else {
+                                    Text(Self.caption(recording, info))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                         }
+                        .disabled(writing && !dvr.isBufferRecording)
                     }.onDelete { indexes in
                         for index in indexes { dvr.delete(dvr.files[index]) }
                     }
