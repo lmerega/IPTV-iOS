@@ -12,7 +12,17 @@ final class TimeshiftBuffer: @unchecked Sendable {
     private var writeHandle: FileHandle?
     private var capacityValue: Int64 = 0
     private var written: Int64 = 0
-    private var samples: [(offset: Int64, date: Date)] = []
+    /// Campioni (offset, tempo del contenuto in secondi). Il tempo viene dal PCR del flusso TS,
+    /// quindi non dipende dalla velocita' di download (i server inviano raffiche iniziali).
+    private var samples: [(offset: Int64, time: Double)] = []
+    private var anchor = Date()
+    private var timeline: Double = 0
+    private var lastPCR: Double?
+    private var pcrPID: Int?
+    private var lastPCRWall = Date.distantPast
+    private var lastAppendWall = Date()
+    private var carry = Data()
+    private var carryOffset: Int64 = 0
     private var segments: [(offset: Int64, name: String)] = []
     private var generationValue = 0
     private let safetyMargin: Int64 = 4_000_000
@@ -45,13 +55,74 @@ final class TimeshiftBuffer: @unchecked Sendable {
             written = 0
             samples = []
             segments = []
+            anchor = Date()
+            timeline = 0
+            lastPCR = nil
+            pcrPID = nil
+            lastPCRWall = .distantPast
+            lastAppendWall = Date()
+            carry = Data()
+            carryOffset = 0
             generationValue += 1
             condition.broadcast()
         }
     }
 
     func markSegment(_ name: String) {
-        locked { segments.append((written, name)) }
+        locked {
+            segments.append((written, name))
+            // nuovo flusso: nuovo orologio PCR
+            pcrPID = nil
+            lastPCR = nil
+            carry = Data()
+            carryOffset = written
+        }
+    }
+
+    /// Cerca i PCR nei pacchetti TS (gestisce pacchetti spezzati tra due blocchi).
+    private func scanPCR(_ data: Data, startOffset: Int64) {
+        var bytes = [UInt8](carry)
+        let base = carry.isEmpty ? startOffset : carryOffset
+        bytes.append(contentsOf: data)
+        var i = 0
+        while i + 188 <= bytes.count {
+            guard bytes[i] == 0x47 else { i += 1; continue }
+            let pid = (Int(bytes[i + 1] & 0x1f) << 8) | Int(bytes[i + 2])
+            let adaptation = (bytes[i + 3] >> 4) & 0x3
+            if (adaptation == 2 || adaptation == 3) && bytes[i + 4] >= 7 && (bytes[i + 5] & 0x10) != 0 {
+                if pcrPID == nil { pcrPID = pid }
+                if pid == pcrPID {
+                    var pcrBase = UInt64(bytes[i + 6]) << 25
+                    pcrBase |= UInt64(bytes[i + 7]) << 17
+                    pcrBase |= UInt64(bytes[i + 8]) << 9
+                    pcrBase |= UInt64(bytes[i + 9]) << 1
+                    pcrBase |= UInt64(bytes[i + 10]) >> 7
+                    registerPCR(Double(pcrBase) / 90_000, offset: base + Int64(i))
+                }
+            }
+            i += 188
+        }
+        carry = i < bytes.count ? Data(bytes[i...]) : Data()
+        carryOffset = base + Int64(i)
+    }
+
+    private func registerPCR(_ pcr: Double, offset: Int64) {
+        if let last = lastPCR {
+            var delta = pcr - last
+            if delta < -47_000 { delta += 95_443.717_688_9 } // riavvolgimento a 2^33 tick
+            if delta > 0 && delta < 5 { timeline += delta }
+            else if delta != 0 { timeline += 0.04 } // discontinuita': prosegue senza salti
+        }
+        lastPCR = pcr
+        lastPCRWall = Date()
+        appendSample(offset: offset)
+    }
+
+    private func appendSample(offset: Int64) {
+        if let last = samples.last {
+            guard timeline - last.time >= 0.5, offset > last.offset else { return }
+        }
+        samples.append((offset, timeline))
     }
 
     func append(_ data: Data) {
@@ -73,11 +144,14 @@ final class TimeshiftBuffer: @unchecked Sendable {
             remaining = remaining.dropFirst(chunk.count)
         }
         let now = Date()
-        if let last = samples.last, now.timeIntervalSince(last.date) < 0.5 {
-            samples[samples.count - 1].offset = written
-        } else {
-            samples.append((written, now))
+        scanPCR(data, startOffset: written - Int64(data.count))
+        if now.timeIntervalSince(lastPCRWall) > 3 {
+            // flusso senza PCR (o PID cambiato): si usa il tempo di arrivo
+            pcrPID = nil
+            timeline += now.timeIntervalSince(lastAppendWall)
+            appendSample(offset: written)
         }
+        lastAppendWall = now
         let low = oldestUnlocked
         if let firstValid = samples.firstIndex(where: { $0.offset >= low }), firstValid > 0 {
             samples.removeFirst(firstValid)
@@ -124,29 +198,35 @@ final class TimeshiftBuffer: @unchecked Sendable {
         return base
     }
 
-    /// Data a cui erano arrivati i byte fino a `offset`.
+    /// Le "date" del timeshift sono virtuali: ancora + tempo del contenuto (PCR).
+    /// Vanno confrontate con `liveDate`, non con l'orologio del telefono.
     func date(at offset: Int64) -> Date? {
         locked {
             guard !samples.isEmpty else { return nil }
-            if let sample = samples.first(where: { $0.offset >= offset }) { return sample.date }
-            return samples.last?.date
+            let time = samples.first(where: { $0.offset >= offset })?.time ?? samples.last?.time ?? 0
+            return anchor.addingTimeInterval(time)
         }
     }
 
-    /// Offset dei dati arrivati all'istante `date`.
     func offset(at date: Date) -> Int64 {
         locked {
             let low = oldestUnlocked
-            guard let index = samples.lastIndex(where: { $0.date <= date }) else { return low }
+            let time = date.timeIntervalSince(anchor)
+            guard let index = samples.lastIndex(where: { $0.time <= time }) else { return low }
             return max(low, samples[index].offset)
         }
     }
 
     var dateRange: ClosedRange<Date>? {
         locked {
-            guard let first = samples.first?.date, let last = samples.last?.date, last > first else { return nil }
-            return first...last
+            guard let first = samples.first?.time, let last = samples.last?.time, last > first else { return nil }
+            return anchor.addingTimeInterval(first)...anchor.addingTimeInterval(last)
         }
+    }
+
+    /// Istante virtuale dell'ultimo dato ricevuto (la "diretta").
+    var liveDate: Date? {
+        locked { samples.last.map { anchor.addingTimeInterval($0.time) } }
     }
 
     func segmentName(at offset: Int64) -> String? {
@@ -390,7 +470,7 @@ final class TimeshiftManager: ObservableObject {
 
     /// Punto di partenza di una registrazione: 5 secondi prima di cio' che si vede.
     var recordingStartOffset: Int64 {
-        buffer.offset(at: (playbackDate ?? Date()).addingTimeInterval(-5))
+        buffer.offset(at: (playbackDate ?? buffer.liveDate ?? Date()).addingTimeInterval(-5))
     }
     var onChannelChange: (() -> Void)?
     private(set) var playerAttached = false
@@ -432,6 +512,7 @@ final class TimeshiftManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
         guard buffer.end > liveStart else { return nil }
+        lastTuneOffset = liveStart
         return localURL(from: liveStart)
     }
 
@@ -439,8 +520,14 @@ final class TimeshiftManager: ObservableObject {
         URL(string: "http://127.0.0.1:\(server.port)/stream?from=\(offset)&r=\(UUID().uuidString.prefix(8))")
     }
 
-    /// Offset per tornare in diretta (pochi secondi prima dell'ultimo dato).
-    var liveOffset: Int64 { buffer.offset(at: Date().addingTimeInterval(-4)) }
+    /// Offset da cui e' partita l'ultima diretta (inizio dei dati del canale appena sintonizzato).
+    private(set) var lastTuneOffset: Int64 = 0
+
+    /// Offset per tornare in diretta: 3 secondi di contenuto prima dell'ultimo dato.
+    var liveOffset: Int64 {
+        guard let live = buffer.liveDate else { return buffer.end }
+        return buffer.offset(at: live.addingTimeInterval(-3))
+    }
 
     /// Il player e' stato chiuso: il download si ferma salvo registrazioni in corso dal buffer.
     func release(keepForRecording: Bool) {

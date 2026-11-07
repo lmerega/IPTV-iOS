@@ -43,7 +43,9 @@ final class PlayerController: ObservableObject {
     private var currentURL: URL?
     private var triedVLC = false
 
-    var tsBehind: Double { max(0, Date().timeIntervalSince(tsPosition)) }
+    var tsBehind: Double {
+        max(0, (TimeshiftManager.shared.buffer.liveDate ?? Date()).timeIntervalSince(tsPosition))
+    }
 
     var canSkip: Bool {
         if catchupProgram != nil || tsActive { return true }
@@ -238,8 +240,9 @@ final class PlayerController: ObservableObject {
                 let local = await TimeshiftManager.shared.tune(channel, url: url)
                 guard mine == generation else { return }
                 if let local {
+                    let timeshift = TimeshiftManager.shared
                     tsActive = true
-                    tsStartDate = Date()
+                    tsStartDate = timeshift.buffer.date(at: timeshift.lastTuneOffset) ?? timeshift.buffer.liveDate ?? Date()
                     tsPosition = tsStartDate
                     log("Timeshift attivo: un'unica connessione, lettura dal buffer locale")
                     load(local, forceEngine: .vlc)
@@ -322,13 +325,14 @@ final class PlayerController: ObservableObject {
     func seekTimeshift(to target: Date) {
         let timeshift = TimeshiftManager.shared
         guard tsActive, let range = timeshift.buffer.dateRange else { return }
-        if target >= Date().addingTimeInterval(-6) { goLive(); return }
+        let live = timeshift.buffer.liveDate ?? Date()
+        if target >= live.addingTimeInterval(-6) { goLive(); return }
         let clamped = max(range.lowerBound.addingTimeInterval(2), target)
         let offset = timeshift.buffer.offset(at: clamped)
         guard let url = timeshift.localURL(from: offset) else { return }
         tsStartDate = timeshift.buffer.date(at: offset) ?? clamped
         tsPosition = tsStartDate
-        log("Timeshift: -\(Int(Date().timeIntervalSince(tsStartDate))) s")
+        log("Timeshift: -\(Int(live.timeIntervalSince(tsStartDate))) s (offset \(offset / 1_048_576) MB di \(timeshift.buffer.end / 1_048_576) MB, buffer \(Int(range.upperBound.timeIntervalSince(range.lowerBound))) s)")
         load(url, forceEngine: .vlc)
     }
 

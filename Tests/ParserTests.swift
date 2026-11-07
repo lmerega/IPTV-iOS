@@ -132,6 +132,38 @@ final class ParserTests: XCTestCase {
         buffer.reset(capacity: 64_000_000)
     }
 
+    private func pcrPacket(pid: Int, seconds: Double) -> Data {
+        var packet = [UInt8](repeating: 0xff, count: 188)
+        packet[0] = 0x47
+        packet[1] = UInt8((pid >> 8) & 0x1f)
+        packet[2] = UInt8(pid & 0xff)
+        packet[3] = 0x20
+        packet[4] = 183
+        packet[5] = 0x10
+        let base = UInt64(seconds * 90_000)
+        packet[6] = UInt8((base >> 25) & 0xff)
+        packet[7] = UInt8((base >> 17) & 0xff)
+        packet[8] = UInt8((base >> 9) & 0xff)
+        packet[9] = UInt8((base >> 1) & 0xff)
+        packet[10] = UInt8((base & 1) << 7)
+        return Data(packet)
+    }
+
+    func testTimeshiftTimelineUsesPCR() throws {
+        let buffer = TimeshiftBuffer()
+        buffer.reset(capacity: 64_000_000)
+        var stream = Data()
+        for step in 0...6 { stream.append(pcrPacket(pid: 256, seconds: 100 + Double(step) * 0.5)) }
+        // arrivo "a raffica" e con un pacchetto spezzato tra due blocchi
+        buffer.append(stream.prefix(300))
+        buffer.append(stream.dropFirst(300))
+        let range = try XCTUnwrap(buffer.dateRange)
+        XCTAssertEqual(range.upperBound.timeIntervalSince(range.lowerBound), 3.0, accuracy: 0.01)
+        XCTAssertEqual(buffer.offset(at: range.lowerBound.addingTimeInterval(1.5)), 3 * 188)
+        XCTAssertEqual(buffer.liveDate, range.upperBound)
+        buffer.reset(capacity: 64_000_000)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))
