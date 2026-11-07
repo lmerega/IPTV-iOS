@@ -328,7 +328,7 @@ final class PlayerController: ObservableObject {
         let live = timeshift.buffer.liveDate ?? Date()
         if target >= live.addingTimeInterval(-6) { goLive(); return }
         let clamped = max(range.lowerBound.addingTimeInterval(2), target)
-        let offset = timeshift.buffer.offset(at: clamped)
+        let offset = timeshift.buffer.snapToKeyframe(timeshift.buffer.offset(at: clamped))
         guard let url = timeshift.localURL(from: offset) else { return }
         tsStartDate = timeshift.buffer.date(at: offset) ?? clamped
         tsPosition = tsStartDate

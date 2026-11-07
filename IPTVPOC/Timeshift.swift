@@ -23,6 +23,8 @@ final class TimeshiftBuffer: @unchecked Sendable {
     private var lastAppendWall = Date()
     private var carry = Data()
     private var carryOffset: Int64 = 0
+    /// Offset dei pacchetti con "random access indicator" sul PID video: inizio di un fotogramma chiave.
+    private var keyframes: [Int64] = []
     private var segments: [(offset: Int64, name: String)] = []
     private var generationValue = 0
     private let safetyMargin: Int64 = 4_000_000
@@ -63,6 +65,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
             lastAppendWall = Date()
             carry = Data()
             carryOffset = 0
+            keyframes = []
             generationValue += 1
             condition.broadcast()
         }
@@ -89,6 +92,11 @@ final class TimeshiftBuffer: @unchecked Sendable {
             guard bytes[i] == 0x47 else { i += 1; continue }
             let pid = (Int(bytes[i + 1] & 0x1f) << 8) | Int(bytes[i + 2])
             let adaptation = (bytes[i + 3] >> 4) & 0x3
+            if (adaptation == 2 || adaptation == 3) && bytes[i + 4] >= 1 && (bytes[i + 5] & 0x40) != 0,
+               pid == pcrPID {
+                let keyOffset = base + Int64(i)
+                if keyframes.last.map({ keyOffset > $0 }) ?? true { keyframes.append(keyOffset) }
+            }
             if (adaptation == 2 || adaptation == 3) && bytes[i + 4] >= 7 && (bytes[i + 5] & 0x10) != 0 {
                 if pcrPID == nil { pcrPID = pid }
                 if pid == pcrPID {
@@ -156,6 +164,9 @@ final class TimeshiftBuffer: @unchecked Sendable {
         if let firstValid = samples.firstIndex(where: { $0.offset >= low }), firstValid > 0 {
             samples.removeFirst(firstValid)
         }
+        if let firstKey = keyframes.firstIndex(where: { $0 >= low }), firstKey > 0 {
+            keyframes.removeFirst(firstKey)
+        }
         condition.broadcast()
     }
 
@@ -221,6 +232,21 @@ final class TimeshiftBuffer: @unchecked Sendable {
         locked {
             guard let first = samples.first?.time, let last = samples.last?.time, last > first else { return nil }
             return anchor.addingTimeInterval(first)...anchor.addingTimeInterval(last)
+        }
+    }
+
+    /// Primo fotogramma chiave dopo `offset` (entro `within` byte), per partire puliti in diretta.
+    func firstKeyframe(after offset: Int64, within: Int64) -> Int64? {
+        locked { keyframes.first(where: { $0 >= offset && $0 - offset <= within }) }
+    }
+
+    /// Porta l'offset all'ultimo fotogramma chiave precedente (al massimo ~10 s prima),
+    /// cosi' VLC riparte con video e audio insieme invece di aspettare la risincronizzazione.
+    func snapToKeyframe(_ offset: Int64) -> Int64 {
+        locked {
+            guard let index = keyframes.lastIndex(where: { $0 <= offset }) else { return offset }
+            let key = keyframes[index]
+            return offset - key < 12_000_000 && key >= oldestUnlocked ? key : offset
         }
     }
 
@@ -470,7 +496,7 @@ final class TimeshiftManager: ObservableObject {
 
     /// Punto di partenza di una registrazione: 5 secondi prima di cio' che si vede.
     var recordingStartOffset: Int64 {
-        buffer.offset(at: (playbackDate ?? buffer.liveDate ?? Date()).addingTimeInterval(-5))
+        buffer.snapToKeyframe(buffer.offset(at: (playbackDate ?? buffer.liveDate ?? Date()).addingTimeInterval(-5)))
     }
     var onChannelChange: (() -> Void)?
     private(set) var playerAttached = false
@@ -478,6 +504,8 @@ final class TimeshiftManager: ObservableObject {
     private init() {
         downloader = TimeshiftDownloader(buffer: buffer)
         server = TimeshiftServer(buffer: buffer)
+        // Il buffer non sopravvive al riavvio dell'app: libera subito lo spazio del vecchio file.
+        try? FileManager.default.removeItem(at: buffer.fileURL)
     }
 
     var freeSpace: Int64 {
@@ -513,7 +541,8 @@ final class TimeshiftManager: ObservableObject {
         }
         guard buffer.end > liveStart else { return nil }
         lastTuneOffset = liveStart
-        return localURL(from: liveStart)
+        if let firstKey = buffer.firstKeyframe(after: liveStart, within: 4_000_000) { lastTuneOffset = firstKey }
+        return localURL(from: lastTuneOffset)
     }
 
     func localURL(from offset: Int64) -> URL? {
@@ -526,7 +555,7 @@ final class TimeshiftManager: ObservableObject {
     /// Offset per tornare in diretta: 3 secondi di contenuto prima dell'ultimo dato.
     var liveOffset: Int64 {
         guard let live = buffer.liveDate else { return buffer.end }
-        return buffer.offset(at: live.addingTimeInterval(-3))
+        return buffer.snapToKeyframe(buffer.offset(at: live.addingTimeInterval(-3)))
     }
 
     /// Il player e' stato chiuso: il download si ferma salvo registrazioni in corso dal buffer.

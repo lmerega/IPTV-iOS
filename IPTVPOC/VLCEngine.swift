@@ -27,7 +27,9 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         player.drawable = view
         player.delegate = self
         let media = VLCMedia(url: url)
-        media.addOptions(["network-caching": 1500, "clock-jitter": 0, "clock-synchro": 0])
+        // Dal buffer locale (127.0.0.1) basta una cache breve: le riaperture del timeshift sono piu' rapide.
+        let caching = url.host == "127.0.0.1" ? 600 : 1500
+        media.addOptions(["network-caching": caching, "clock-jitter": 0, "clock-synchro": 0])
         player.media = media
         player.videoAspectRatio = nil
         player.scaleFactor = 0
