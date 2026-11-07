@@ -32,6 +32,13 @@ final class PlayerController: ObservableObject {
     private var estimatedTime: Double = 0
     private var heartbeatCount = 0
     private var lastStateText = ""
+    private var avAudioGroup: AVMediaSelectionGroup?
+    private var avTextGroup: AVMediaSelectionGroup?
+    /// Tracce audio presenti nel file ma non selezionabili con AVPlayer (MP4 senza gruppi alternativi).
+    @Published var avAudioTracksInFile = 0
+    private var pendingSeek: Double?
+    /// Film/registrazioni con AVPlayer: si puo' riaprire con VLC per avere tutte le lingue.
+    var canReopenInVLC: Bool { engine == .avplayer && !isLive && catchupProgram == nil && VLCEngine.isAvailable }
     private var stalledTicks = 0
     var currentURL: URL?
     private var lastInfoUpdate = Date.distantPast
@@ -49,7 +56,6 @@ final class PlayerController: ObservableObject {
     private var streamOffset: Double = 0
     private var generation = 0
     private var fallbackURL: URL?
-    private var currentURL: URL?
     private var triedVLC = false
 
     var tsBehind: Double {
@@ -85,6 +91,10 @@ final class PlayerController: ObservableObject {
         vlc.onTime = { [weak self] seconds in
             guard let self else { return }
             if self.isBuffering { self.isBuffering = false; self.message = nil; self.log("VLC: immagini in arrivo") }
+            if let target = self.pendingSeek {
+                self.pendingSeek = nil
+                if target > 3 { self.vlc.seek(to: target); self.log("Riprendo da \(Self.clock(target))") }
+            }
             self.advance(reported: seconds)
         }
         vlc.onState = { [weak self] text in
@@ -205,10 +215,7 @@ final class PlayerController: ObservableObject {
 
     /// Lingue e sottotitoli (VLC; AVPlayer li offre gia' nei suoi controlli).
     private func refreshTracks() {
-        guard engine == .vlc else {
-            if !audioTracks.isEmpty || !subtitleTracks.isEmpty { audioTracks = []; subtitleTracks = [] }
-            return
-        }
+        guard engine == .vlc else { return }
         let audio = vlc.audioTracks
         let subtitles = vlc.subtitleTracks
         if audio != audioTracks { audioTracks = audio }
@@ -217,13 +224,64 @@ final class PlayerController: ObservableObject {
         currentSubtitle = vlc.currentSubtitle
     }
 
+    /// Lingue e sottotitoli dichiarati nel file per AVPlayer.
+    private func loadAVTracks(_ item: AVPlayerItem) async {
+        let asset = item.asset
+        let audioGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
+        let textGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
+        let audioInFile = (try? await asset.loadTracks(withMediaType: .audio))?.count ?? 0
+        guard item === player.currentItem, engine == .avplayer else { return }
+        avAudioGroup = audioGroup
+        avTextGroup = textGroup
+        avAudioTracksInFile = audioInFile
+        let selection = item.currentMediaSelection
+        let audioOptions = audioGroup?.options ?? []
+        audioTracks = audioOptions.enumerated().map { MediaTrack(id: Int32($0.offset), name: $0.element.displayName) }
+        if let audioGroup, let chosen = selection.selectedMediaOption(in: audioGroup),
+           let index = audioOptions.firstIndex(of: chosen) { currentAudio = Int32(index) }
+        let textOptions = textGroup?.options ?? []
+        subtitleTracks = textOptions.isEmpty ? [] : [MediaTrack(id: -1, name: "Disattivati")]
+            + textOptions.enumerated().map { MediaTrack(id: Int32($0.offset), name: $0.element.displayName) }
+        currentSubtitle = -1
+        if let textGroup, let chosen = selection.selectedMediaOption(in: textGroup),
+           let index = textOptions.firstIndex(of: chosen) { currentSubtitle = Int32(index) }
+        log("AVPlayer: \(audioInFile) tracce audio nel file, \(audioOptions.count) selezionabili, \(textOptions.count) sottotitoli")
+    }
+
+    /// Riapre il film con VLC dallo stesso punto: VLC vede tutte le tracce audio e i sottotitoli.
+    func reopenInVLC() {
+        guard let url = currentURL, VLCEngine.isAvailable else { return }
+        let position = player.currentTime().seconds
+        pendingSeek = position.isFinite ? position : nil
+        triedVLC = true
+        log("Riapro con VLC per lingue e sottotitoli")
+        load(url, forceEngine: .vlc)
+    }
+
     func selectAudio(_ track: MediaTrack) {
+        if engine == .avplayer {
+            if let group = avAudioGroup, group.options.indices.contains(Int(track.id)) {
+                player.currentItem?.select(group.options[Int(track.id)], in: group)
+                currentAudio = track.id
+                log("Audio: \(track.name)")
+            }
+            return
+        }
         vlc.selectAudio(track.id)
         currentAudio = track.id
         log("Audio: \(track.name)")
     }
 
     func selectSubtitle(_ track: MediaTrack) {
+        if engine == .avplayer {
+            if let group = avTextGroup {
+                let option = group.options.indices.contains(Int(track.id)) ? group.options[Int(track.id)] : nil
+                player.currentItem?.select(option, in: group)
+                currentSubtitle = track.id
+                log("Sottotitoli: \(track.name)")
+            }
+            return
+        }
         vlc.selectSubtitle(track.id)
         currentSubtitle = track.id
         log("Sottotitoli: \(track.name)")
@@ -249,7 +307,11 @@ final class PlayerController: ObservableObject {
         estimatedTime = 0
         isPaused = false
         log("Apro \(describe(url)) con \(chosen == .vlc ? "VLC" : "AVPlayer")")
-        currentURL = url
+        audioTracks = []
+        subtitleTracks = []
+        avAudioGroup = nil
+        avTextGroup = nil
+        avAudioTracksInFile = 0
         stalledTicks = 0
         lastStateText = ""
         if chosen == .vlc {
@@ -276,6 +338,7 @@ final class PlayerController: ObservableObject {
             log("AVPlayer: pronto")
             isBuffering = false
             message = nil
+            if let item = player.currentItem { Task { await loadAVTracks(item) } }
         case .failed:
             log("AVPlayer: errore \(text ?? "")")
             if let fallback = fallbackURL {

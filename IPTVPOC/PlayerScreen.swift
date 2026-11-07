@@ -232,7 +232,7 @@ struct PlayerScreen: View {
 
     /// Menu lingue e sottotitoli: compare solo se il contenuto ha piu' audio o dei sottotitoli.
     @ViewBuilder private var tracksMenu: some View {
-        if controller.audioTracks.count > 1 || controller.subtitleTracks.count > 1 {
+        if controller.audioTracks.count > 1 || controller.subtitleTracks.count > 1 || controller.canReopenInVLC {
             Menu {
                 if controller.audioTracks.count > 1 {
                     Section("Audio") {
@@ -241,6 +241,14 @@ struct PlayerScreen: View {
                                 if track.id == controller.currentAudio { Label(track.name, systemImage: "checkmark") }
                                 else { Text(track.name) }
                             }
+                        }
+                    }
+                }
+                if controller.canReopenInVLC {
+                    Section(controller.avAudioTracksInFile > max(1, controller.audioTracks.count)
+                            ? "Il file ha \(controller.avAudioTracksInFile) tracce audio" : "Altre lingue") {
+                        Button("Riapri con VLC (tutte le lingue e i sottotitoli)", systemImage: "arrow.triangle.2.circlepath") {
+                            controller.reopenInVLC()
                         }
                     }
                 }

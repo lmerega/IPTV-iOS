@@ -39,7 +39,7 @@ struct HelpView: View {
             Entry(title: "Ricerca",
                   text: "Scrivi nel campo Cerca: la ricerca parte appena smetti di scrivere, ignora maiuscole e accenti e vale nella categoria scelta."),
             Entry(title: "Lingua e sottotitoli",
-                  text: "Se il contenuto ha piu' lingue o sottotitoli, nel player compare l'icona del fumetto: toccala per scegliere. Con AVPlayer la scelta e' nei controlli del video."),
+                  text: "Tocca l'icona del fumetto nel player per scegliere lingua e sottotitoli. Molti film MP4 hanno piu' lingue che il player di Apple non riesce a cambiare: in quel caso scegli \"Riapri con VLC\", il film riparte dallo stesso punto e compaiono tutte le lingue."),
             Entry(title: "Formato video",
                   text: "L'icona con il rettangolo (nei controlli e a schermo intero) sceglie come mostrare il video: Adatta (tutto visibile, con bande nere se le proporzioni sono diverse), Riempi (ingrandisce e taglia i bordi), Stira (riempie deformando), oppure proporzioni fisse 16:9, 4:3, 21:9 per i canali che le trasmettono sbagliate. La scelta viene ricordata."),
             Entry(title: "Bande nere ai lati",
