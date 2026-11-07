@@ -1,7 +1,7 @@
 # Installare IPTVPOC su iPad con Sideloadly (Windows)
 
 Vale per iPadOS 18 o successivo, con Apple ID gratuito già usato per l'iPhone.
-File: `releases\IPTVPOC-0.7.2-build22.ipa`. Bundle ID da lasciare invariato: `io.github.lmerega.iptvpoc`.
+File: `releases\IPTVPOC-0.8.0-build<numero>.ipa (il più recente)`. Bundle ID da lasciare invariato: `io.github.lmerega.iptvpoc`.
 
 Requisiti sul PC: Sideloadly, Apple Devices (o iTunes) e Bonjour installati. Usare il cavo USB.
 
