@@ -82,7 +82,8 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     func selectSubtitle(_ id: Int32) { player.currentVideoSubTitleIndex = id }
 
     func play(_ url: URL) {
-        player.stop()
+        // Fermare un player gia' fermo genera eventi "fermo" in ritardo che possono bloccare il nuovo flusso.
+        if player.state != .stopped || player.media != nil { player.stop() }
         player.drawable = view
         player.delegate = self
         let media = VLCMedia(url: url)

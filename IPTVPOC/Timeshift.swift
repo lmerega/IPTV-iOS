@@ -340,6 +340,18 @@ final class TimeshiftServer: @unchecked Sendable {
 
     init(buffer: TimeshiftBuffer) { self.buffer = buffer }
 
+    private var requests = 0
+    private var bytesSent: Int64 = 0
+    private var lastFrom: Int64 = -1
+    private var lastRequest = Date.distantPast
+
+    /// Stato del server locale per il log di diagnostica.
+    var diagnostics: String {
+        lock.lock(); defer { lock.unlock() }
+        let ago = lastRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastRequest))) s fa"
+        return "Server locale: porta \(portValue), richieste \(requests) (ultima \(ago), da \(lastFrom / 1_048_576) MB), inviati \(bytesSent / 1_048_576) MB"
+    }
+
     func start() async -> Bool {
         if port != 0 { return true }
         let parameters = NWParameters.tcp
@@ -392,6 +404,7 @@ final class TimeshiftServer: @unchecked Sendable {
            let value = components.queryItems?.first(where: { $0.name == "from" })?.value, let number = Int64(value) {
             from = number
         }
+        lock.lock(); requests += 1; lastFrom = from; lastRequest = Date(); lock.unlock()
         let isHead = parts.first == "HEAD"
         let header = "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
@@ -415,8 +428,10 @@ final class TimeshiftServer: @unchecked Sendable {
             }
             return
         }
+        let count = Int64(chunk.data.count)
         connection.send(content: chunk.data, completion: .contentProcessed { [weak self] error in
             guard let self, error == nil else { try? handle.close(); connection.cancel(); return }
+            self.lock.lock(); self.bytesSent += count; self.lock.unlock()
             self.pump(connection, handle: handle, offset: chunk.next, generation: generation)
         })
     }
@@ -487,7 +502,7 @@ final class TimeshiftManager: ObservableObject {
 
     let buffer = TimeshiftBuffer()
     private let downloader: TimeshiftDownloader
-    private let server: TimeshiftServer
+    let server: TimeshiftServer
     @Published private(set) var channelID: String?
     @Published private(set) var channelName = ""
     @Published private(set) var downloading = false

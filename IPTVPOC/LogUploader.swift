@@ -47,6 +47,7 @@ enum LogUploader {
         lines.append("Timeshift: abilitato \(timeshift.enabled), \(timeshift.sizeGB) GB, scaricati \(timeshift.buffer.end / 1_048_576) MB, nel buffer \(timeshift.bufferedMinutes) min, download \(timeshift.downloading), indietro \(Int(controller.tsBehind)) s")
         if let info = controller.streamInfo { lines.append("Flusso: \(info)") }
         lines.append(DVRManager.shared.diagnostics)
+        if timeshift.enabled { lines.append(timeshift.server.diagnostics) }
         if let url = controller.currentURL, url.isFileURL {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             lines.append("File: \(url.lastPathComponent), \(size / 1_048_576) MB, durata salvata \(controller.knownDuration.map { "\(Int($0)) s" } ?? "nessuna"), posizione \(PlayerController.clock(controller.currentTime))")

@@ -40,6 +40,8 @@ final class PlayerController: ObservableObject {
     /// Film/registrazioni con AVPlayer: si puo' riaprire con VLC per avere tutte le lingue.
     var canReopenInVLC: Bool { engine == .avplayer && !isLive && catchupProgram == nil && VLCEngine.isAvailable }
     private var stalledTicks = 0
+    private var loadDate = Date()
+    private var restartCount = 0
     var currentURL: URL?
     private var lastInfoUpdate = Date.distantPast
     @Published var logLines: [String] = []
@@ -129,6 +131,7 @@ final class PlayerController: ObservableObject {
     private func heartbeatTick() {
         heartbeatCount += 1
         if engine == .vlc {
+            watchdog()
             let playing = vlc.isPlaying
             if playing && isBuffering { isBuffering = false; message = nil }
             let reported = vlc.timeSeconds
@@ -149,6 +152,19 @@ final class PlayerController: ObservableObject {
             let timeshift = TimeshiftManager.shared
             log("Buffer: \(timeshift.buffer.end / 1_048_576) MB, \(timeshift.bufferedMinutes) min, indietro \(Int(tsBehind)) s")
         }
+    }
+
+    /// VLC a volte resta fermo dopo l'apertura (flusso aperto mentre il precedente si chiudeva):
+    /// dopo 10 secondi senza immagini riprova, al massimo due volte.
+    private func watchdog() {
+        if !isBuffering { restartCount = 0; return }
+        guard !isPaused, !vlc.isPlaying, Date().timeIntervalSince(loadDate) > 10, restartCount < 2 else { return }
+        restartCount += 1
+        var detail = "VLC fermo da 10 s (stato \(lastStateText.isEmpty ? "nessuno" : lastStateText))"
+        if tsActive { detail += "; " + TimeshiftManager.shared.server.diagnostics }
+        log(detail + ": riprovo (\(restartCount)/2)")
+        if tsActive { goLive() }
+        else if let url = currentURL { load(url, forceEngine: .vlc) }
     }
 
     static func clock(_ seconds: Double) -> String {
@@ -313,6 +329,7 @@ final class PlayerController: ObservableObject {
         avTextGroup = nil
         avAudioTracksInFile = 0
         stalledTicks = 0
+        loadDate = Date()
         lastStateText = ""
         if chosen == .vlc {
             player.pause()
