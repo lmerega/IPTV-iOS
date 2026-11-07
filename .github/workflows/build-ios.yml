@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'IPTVPOC/**'
+      - 'Tests/**'
       - 'project.yml'
       - '.github/workflows/build-ios.yml'
 permissions:
@@ -37,6 +38,10 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             build
+      - name: Check Info.plist
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/IPTVPOC.app"
+          plutil -p "$APP/Info.plist" | grep -E "CFBundleIdentifier|NSAllowsArbitraryLoads|UIBackgroundModes"
       - name: Create unsigned IPA
         run: |
           set -euo pipefail
@@ -54,3 +59,18 @@ jobs:
           path: output/IPTVPOC-unsigned.ipa
           retention-days: 7
           if-no-files-found: error
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+      - name: Run unit tests on simulator
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}')
+          xcodebuild test -project IPTVPOC.xcodeproj -scheme IPTVPOC \
+            -destination "id=$UDID" -derivedDataPath "$RUNNER_TEMP/DD" CODE_SIGNING_ALLOWED=NO

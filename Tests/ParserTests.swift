@@ -1,0 +1,95 @@
+import XCTest
+@testable import IPTVPOC
+
+final class ParserTests: XCTestCase {
+    func testM3UParsing() {
+        let text = """
+        #EXTM3U
+        #EXTINF:-1 tvg-id="uno.it" tvg-logo="http://example.invalid/l.png" group-title="Rete, Test" catchup="default" catchup-days="3" catchup-source="http://example.invalid/c/{utc}",Canale Uno
+        http://example.invalid/live/1.m3u8
+        #EXTINF:-1 group-title="Sport",Canale Due
+        http://example.invalid/live/2.m3u8
+        """
+        let list = IPTVService.parseM3U(text, base: nil)
+        XCTAssertEqual(list.count, 2)
+        XCTAssertEqual(list[0].name, "Canale Uno")
+        XCTAssertEqual(list[0].group, "Rete, Test")
+        XCTAssertEqual(list[0].epgID, "uno.it")
+        XCTAssertTrue(list[0].archive)
+        XCTAssertEqual(list[0].archiveDays, 3)
+        XCTAssertFalse(list[1].archive)
+        XCTAssertNotEqual(list[0].id, list[1].id)
+    }
+
+    func testXtreamFlexibleJSON() throws {
+        let json = #"[{"stream_id":"12","name":"A","category_id":5,"tv_archive":"1","tv_archive_duration":3}]"#
+        let list = try JSONDecoder().decode([XtreamStream].self, from: Data(json.utf8))
+        XCTAssertEqual(list[0].stream_id, 12)
+        XCTAssertEqual(list[0].category_id, "5")
+        XCTAssertEqual(list[0].tv_archive, 1)
+        XCTAssertEqual(list[0].tv_archive_duration, 3)
+    }
+
+    private func xtreamSource() -> IPTVSource {
+        var s = IPTVSource()
+        s.kind = "xtream"; s.server = "http://example.invalid:8080"
+        s.username = "u"; s.password = "p"; s.serverTimeZone = "UTC"
+        return s
+    }
+
+    private func channel(_ source: IPTVSource) throws -> IPTVChannel {
+        IPTVChannel(id: "x10", name: "C", group: "g",
+                    url: try IPTVService.streamURL(source, kind: "live", id: 10, ext: "m3u8"),
+                    streamID: 10, archive: true)
+    }
+
+    func testXtreamCatchupURLs() throws {
+        let source = xtreamSource()
+        let ch = try channel(source)
+        let start = Date(timeIntervalSince1970: 1_767_323_040) // 2026-01-02 03:04:00 UTC
+        let ts = CatchupResolver.url(variant: .ts, source: source, channel: ch, start: start, duration: 3600)
+        XCTAssertEqual(ts?.absoluteString, "http://example.invalid:8080/timeshift/u/p/60/2026-01-02:03-04/10.ts")
+        let php = CatchupResolver.url(variant: .php, source: source, channel: ch, start: start, duration: 3600)
+        XCTAssertEqual(php?.path, "/streaming/timeshift.php")
+        XCTAssertTrue(php?.query?.contains("duration=60") ?? false)
+    }
+
+    func testCatchupShiftAndTimezone() throws {
+        var source = xtreamSource()
+        source.serverTimeZone = "Europe/Rome"
+        source.archiveShiftMinutes = 30
+        let ch = try channel(source)
+        let start = Date(timeIntervalSince1970: 1_767_323_040)
+        let url = CatchupResolver.url(variant: .m3u8, source: source, channel: ch, start: start, duration: 600)
+        XCTAssertEqual(url?.lastPathComponent, "10.m3u8")
+        XCTAssertTrue(url?.absoluteString.contains("/10/2026-01-02:04-34/") ?? false)
+    }
+
+    func testM3UTemplate() {
+        var source = IPTVSource()
+        source.serverTimeZone = "UTC"
+        let ch = IPTVChannel(id: "m1", name: "C", group: "g", url: URL(string: "http://example.invalid/l.m3u8")!,
+                             streamID: nil, archive: true,
+                             archiveTemplate: "http://example.invalid/c?s={utc}&d={duration}&y={Y}")
+        let url = CatchupResolver.url(variant: .auto, source: source, channel: ch,
+                                      start: Date(timeIntervalSince1970: 1_767_323_040), duration: 600)
+        XCTAssertEqual(url?.absoluteString, "http://example.invalid/c?s=1767323040&d=600&y=2026")
+    }
+
+    func testGzip() throws {
+        let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
+        let gz = try XCTUnwrap(Data(base64Encoded: b64))
+        let xml = try XCTUnwrap(IPTVExtras.gunzip(gz))
+        XCTAssertTrue(String(decoding: xml, as: UTF8.self).hasPrefix("<tv>"))
+    }
+
+    func testProgramParsingBase64Title() throws {
+        let source = xtreamSource()
+        let ch = try channel(source)
+        let entry: [String: Any] = ["id": "1", "title": "Tm90aXppZQ==",
+                                    "start_timestamp": "1767323040", "stop_timestamp": "1767326640", "has_archive": 1]
+        let program = try XCTUnwrap(IPTVExtras.parseProgram(entry, channel: ch, zone: TimeZone(identifier: "UTC")!))
+        XCTAssertEqual(program.title, "Notizie")
+        XCTAssertTrue(program.hasArchive)
+    }
+}

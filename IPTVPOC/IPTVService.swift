@@ -1,69 +1,10 @@
 import Foundation
-import Security
-
-struct IPTVChannel: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let group: String
-    let url: URL
-    let streamID: Int?
-    let archive: Bool
-}
-
-struct IPTVSource: Codable {
-    var kind: String = "m3u"
-    var server: String = ""
-    var username: String = ""
-    var password: String = ""
-    var playlist: String = ""
-}
-
-enum IPTVError: LocalizedError {
-    case invalidURL, invalidResponse, noChannels, badCredentials
-    var errorDescription: String? {
-        switch self {
-        case .invalidURL: return "Indirizzo non valido."
-        case .invalidResponse: return "Risposta del server non valida."
-        case .noChannels: return "Nessun canale rilevato."
-        case .badCredentials: return "Autenticazione non riuscita."
-        }
-    }
-}
-
-enum SourceVault {
-    private static let account = "iptv-source-v1"
-    static func save(_ source: IPTVSource) throws {
-        let data = try JSONEncoder().encode(source)
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrAccount as String: account]
-        SecItemDelete(query as CFDictionary)
-        var attrs = query
-        attrs[kSecValueData as String] = data
-        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let code = SecItemAdd(attrs as CFDictionary, nil)
-        guard code == errSecSuccess else { throw IPTVError.invalidResponse }
-    }
-    static func load() -> IPTVSource? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrAccount as String: account,
-                                    kSecReturnData as String: true,
-                                    kSecMatchLimit as String: kSecMatchLimitOne]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(IPTVSource.self, from: data)
-    }
-    static func clear() {
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword,
-                       kSecAttrAccount as String: account] as CFDictionary)
-    }
-}
 
 enum IPTVService {
-    private static func get(_ url: URL) async throws -> Data {
+    static func get(_ url: URL, timeout: TimeInterval = 30) async throws -> Data {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 25
-        request.setValue("IPTVPOC/0.2", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = timeout
+        request.setValue("IPTVPOC/0.3", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw IPTVError.invalidResponse
@@ -71,116 +12,181 @@ enum IPTVService {
         return data
     }
 
-    private static func url(_ raw: String) throws -> URL {
+    // MARK: URL helpers
+
+    private static let unreserved = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    static func encode(_ text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: unreserved) ?? text
+    }
+
+    static func baseURL(_ raw: String) throws -> URL {
         guard let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
               url.host != nil else { throw IPTVError.invalidURL }
         return url
     }
 
-    static func load(_ source: IPTVSource) async throws -> [IPTVChannel] {
-        if source.kind == "xtream" { return try await loadXtream(source) }
-        let playlistURL = try url(source.playlist)
-        let data = try await get(playlistURL)
-        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-        var channels: [IPTVChannel] = []
-        var name = ""
-        var group = "Altri"
-        var archive = false
-        for lineSub in text.components(separatedBy: .newlines) {
-            let line = lineSub.trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.hasPrefix("#EXTINF") {
-                name = line.components(separatedBy: ",").dropFirst().joined(separator: ",")
-                group = attribute("group-title", in: line) ?? "Altri"
-                archive = (attribute("tvg-rec", in: line) == "1" ||
-                           attribute("catchup", in: line) != nil)
-            } else if line.hasPrefix("#EXTGRP:") {
-                group = String(line.dropFirst(8))
-            } else if !line.isEmpty && !line.hasPrefix("#"),
-                      let address = URL(string: line, relativeTo: playlistURL)?.absoluteURL,
-                      ["http", "https"].contains(address.scheme?.lowercased() ?? "") {
-                let channelName = name.isEmpty ? "Canale \(channels.count + 1)" : name
-                channels.append(IPTVChannel(id: "\(channels.count)-\(channelName)", name: channelName,
-                                            group: group, url: address, streamID: nil, archive: archive))
-                name = ""; group = "Altri"; archive = false
-            }
+    static func rootPath(_ url: URL) -> String {
+        let prefix = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return prefix.isEmpty ? "" : "/" + prefix
+    }
+
+    static func xtreamURL(_ source: IPTVSource, path: String, query: [(String, String)] = []) throws -> URL {
+        let base = try baseURL(source.server)
+        var parts = URLComponents()
+        parts.scheme = base.scheme
+        parts.host = base.host
+        parts.port = base.port
+        parts.path = rootPath(base) + path
+        if !query.isEmpty {
+            parts.percentEncodedQuery = query.map { "\(encode($0.0))=\(encode($0.1))" }.joined(separator: "&")
         }
+        guard let url = parts.url else { throw IPTVError.invalidURL }
+        return url
+    }
+
+    static func apiURL(_ source: IPTVSource, action: String? = nil, _ params: [(String, String)] = []) throws -> URL {
+        var query = [("username", source.username), ("password", source.password)]
+        if let action { query.append(("action", action)) }
+        query.append(contentsOf: params)
+        return try xtreamURL(source, path: "/player_api.php", query: query)
+    }
+
+    static func streamURL(_ source: IPTVSource, kind: String, id: Int, ext: String) throws -> URL {
+        try xtreamURL(source, path: "/\(kind)/\(source.username)/\(source.password)/\(id).\(ext)")
+    }
+
+    static func text(_ value: Any?) -> String {
+        if let v = value as? String { return v }
+        if let v = value as? NSNumber { return v.stringValue }
+        return ""
+    }
+
+    // MARK: Loading
+
+    static func loadChannels(_ source: IPTVSource) async throws -> [IPTVChannel] {
+        if source.kind == "xtream" { return try await loadXtream(source) }
+        let playlist = try baseURL(source.playlist)
+        let data = try await get(playlist, timeout: 90)
+        let body = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        let channels = parseM3U(body, base: playlist)
         if channels.isEmpty { throw IPTVError.noChannels }
         return channels
+    }
+
+    private struct Meta {
+        var name = ""
+        var group = "Altri"
+        var logo: String?
+        var epgID: String?
+        var template: String?
+        var mode: String?
+        var days = 0
+        var archive = false
+    }
+
+    static func parseM3U(_ body: String, base: URL?) -> [IPTVChannel] {
+        var channels: [IPTVChannel] = []
+        var used = Set<String>()
+        var meta = Meta()
+        for rawLine in body.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#EXTINF") {
+                meta = Meta()
+                meta.name = displayName(line)
+                meta.group = attribute("group-title", in: line) ?? "Altri"
+                meta.template = attribute("catchup-source", in: line)
+                meta.mode = attribute("catchup", in: line)
+                meta.days = Int(attribute("catchup-days", in: line) ?? "") ?? 0
+                meta.logo = attribute("tvg-logo", in: line)
+                meta.epgID = attribute("tvg-id", in: line)
+                meta.archive = attribute("tvg-rec", in: line) == "1" || meta.mode != nil
+                    || meta.template != nil || meta.days > 0
+            } else if line.hasPrefix("#EXTGRP:") {
+                meta.group = String(line.dropFirst(8))
+            } else if !line.isEmpty && !line.hasPrefix("#"),
+                      let address = URL(string: line, relativeTo: base)?.absoluteURL,
+                      ["http", "https"].contains(address.scheme?.lowercased() ?? "") {
+                let name = meta.name.isEmpty ? "Canale \(channels.count + 1)" : meta.name
+                var id = "m" + stableHash(address.absoluteString + "|" + name)
+                var n = 1
+                while used.contains(id) { n += 1; id = "m" + stableHash(address.absoluteString + "|" + name) + "-\(n)" }
+                used.insert(id)
+                channels.append(IPTVChannel(id: id, name: name, group: meta.group, url: address,
+                                            streamID: nil, archive: meta.archive, logo: meta.logo,
+                                            epgID: meta.epgID, archiveTemplate: meta.template,
+                                            archiveMode: meta.mode, archiveDays: meta.days))
+                meta = Meta()
+            }
+        }
+        return channels
+    }
+
+    private static func displayName(_ line: String) -> String {
+        var from = line.startIndex
+        if let quote = line.lastIndex(of: "\"") { from = quote }
+        guard let comma = line[from...].firstIndex(of: ",") else { return "" }
+        return String(line[line.index(after: comma)...]).trimmingCharacters(in: .whitespaces)
     }
 
     private static func attribute(_ key: String, in line: String) -> String? {
         guard let range = line.range(of: key + "=\"") else { return nil }
         let tail = line[range.upperBound...]
         guard let end = tail.firstIndex(of: "\"") else { return nil }
-        return String(tail[..<end])
+        let value = String(tail[..<end])
+        return value.isEmpty ? nil : value
+    }
+
+    static func categories(_ source: IPTVSource, action: String) async -> [String: String] {
+        guard source.kind == "xtream", let url = try? apiURL(source, action: action),
+              let data = try? await get(url),
+              let objects = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [:] }
+        var result: [String: String] = [:]
+        for entry in objects {
+            let key = text(entry["category_id"])
+            let value = text(entry["category_name"])
+            if !key.isEmpty && !value.isEmpty { result[key] = value }
+        }
+        return result
     }
 
     private static func loadXtream(_ source: IPTVSource) async throws -> [IPTVChannel] {
-        let endpoint = try url(source.server)
-        guard let scheme = endpoint.scheme, let host = endpoint.host else { throw IPTVError.invalidURL }
-        var base = URLComponents()
-        base.scheme = scheme
-        base.host = host
-        base.port = endpoint.port
-        base.path = (endpoint.path == "/" ? "" : endpoint.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).isEmpty ? "" : endpoint.path) + "/player_api.php"
-        base.queryItems = [URLQueryItem(name: "username", value: source.username),
-                           URLQueryItem(name: "password", value: source.password),
-                           URLQueryItem(name: "action", value: "get_live_streams")]
-        guard let endpointURL = base.url else { throw IPTVError.invalidURL }
-        let data = try await get(endpointURL)
-        let decoded = try JSONDecoder().decode([XtreamStream].self, from: data)
+        async let names = categories(source, action: "get_live_categories")
+        let data = try await get(try apiURL(source, action: "get_live_streams"), timeout: 120)
+        let streams: [XtreamStream]
+        do { streams = try JSONDecoder().decode([XtreamStream].self, from: data) }
+        catch { throw IPTVError.badCredentials }
+        let categoryNames = await names
+        let ext = source.streamFormat == "ts" ? "ts" : "m3u8"
         var results: [IPTVChannel] = []
-        for stream in decoded {
-            guard let number = stream.stream_id else { continue }
-            var link = URLComponents()
-            link.scheme = scheme
-            link.host = host
-            link.port = endpoint.port
-            let prefix = endpoint.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let root = prefix.isEmpty ? "" : "/" + prefix
-            link.path = root + "/live/" + source.username + "/" + source.password + "/" + String(number) + ".m3u8"
-            guard let playback = link.url else { continue }
-            let supportsArchive = (stream.tv_archive ?? 0) > 0
-            results.append(IPTVChannel(id: "xtream-\(number)", name: stream.name ?? "Canale \(number)",
-                                       group: stream.category_id ?? "Live", url: playback,
-                                       streamID: number, archive: supportsArchive))
+        results.reserveCapacity(streams.count)
+        for stream in streams {
+            guard let number = stream.stream_id,
+                  let link = try? streamURL(source, kind: "live", id: number, ext: ext) else { continue }
+            let group = stream.category_id.flatMap { categoryNames[$0] } ?? stream.category_id ?? "Live"
+            results.append(IPTVChannel(id: "x\(number)", name: stream.name ?? "Canale \(number)",
+                                       group: group, url: link, streamID: number,
+                                       archive: (stream.tv_archive ?? 0) > 0,
+                                       logo: stream.stream_icon, epgID: stream.epg_channel_id,
+                                       archiveDays: stream.tv_archive_duration ?? 0))
         }
         if results.isEmpty { throw IPTVError.noChannels }
         return results
     }
 
-    static func archivePrograms(_ source: IPTVSource, channel: IPTVChannel) async throws -> [ArchiveProgram] {
-        guard source.kind == "xtream", let id = channel.streamID else { return [] }
-        let endpoint = try url(source.server)
-        var url = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
-        url.path = (endpoint.path == "/" ? "" : endpoint.path) + "/player_api.php"
-        url.queryItems = [URLQueryItem(name: "username", value: source.username),
-                          URLQueryItem(name: "password", value: source.password),
-                          URLQueryItem(name: "action", value: "get_simple_data_table"),
-                          URLQueryItem(name: "stream_id", value: String(id))]
-        guard let target = url.url else { throw IPTVError.invalidURL }
-        let data = try await get(target)
-        let response = try JSONDecoder().decode(ArchiveResponse.self, from: data)
-        return (response.epg_listings ?? []).filter { ($0.has_archive ?? 0) > 0 }
-    }
-
-    static func archiveURL(_ source: IPTVSource, stream: IPTVChannel, program: ArchiveProgram) -> URL? {
-        guard let id = stream.streamID,
-              let origin = URL(string: source.server),
-              let start = TimeInterval(program.start_timestamp ?? ""),
-              let stop = TimeInterval(program.stop_timestamp ?? ""),
-              stop > start else { return nil }
-        let startDate = Date(timeIntervalSince1970: start)
-        let formatter = DateFormatter()
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd:HH-mm"
-        let minutes = max(1, Int(ceil((stop - start) / 60)))
-        var parts = URLComponents(url: origin, resolvingAgainstBaseURL: false)!
-        let prefix = origin.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let root = prefix.isEmpty ? "" : "/" + prefix
-        parts.path = root + "/timeshift/" + source.username + "/" + source.password + "/\(minutes)/\(formatter.string(from: startDate))/\(id).ts"
-        return parts.url
+    static func accountInfo(_ source: IPTVSource) async -> AccountInfo? {
+        guard source.kind == "xtream", let url = try? apiURL(source), let data = try? await get(url),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        let user = root["user_info"] as? [String: Any] ?? [:]
+        let server = root["server_info"] as? [String: Any] ?? [:]
+        var info = AccountInfo()
+        info.status = text(user["status"])
+        if let stamp = TimeInterval(text(user["exp_date"])) { info.expiry = Date(timeIntervalSince1970: stamp) }
+        info.maxConnections = Int(text(user["max_connections"]))
+        let zone = text(server["timezone"])
+        info.timezone = zone.isEmpty ? nil : zone
+        return info
     }
 }
 
@@ -189,26 +195,35 @@ struct XtreamStream: Decodable {
     let name: String?
     let category_id: String?
     let tv_archive: Int?
-}
+    let tv_archive_duration: Int?
+    let stream_icon: String?
+    let epg_channel_id: String?
 
-struct ArchiveResponse: Decodable {
-    let epg_listings: [ArchiveProgram]?
-}
-
-struct ArchiveProgram: Decodable, Identifiable {
-    let id: String
-    let title: String?
-    let start_timestamp: String?
-    let stop_timestamp: String?
-    let has_archive: Int?
-
-    var displayTitle: String {
-        guard let title, let data = Data(base64Encoded: title),
-              let decoded = String(data: data, encoding: .utf8) else { return title ?? "Programma" }
-        return decoded
+    enum CodingKeys: String, CodingKey {
+        case stream_id, name, category_id, tv_archive, tv_archive_duration, stream_icon, epg_channel_id
     }
-    var displayTime: String {
-        guard let raw = start_timestamp, let time = TimeInterval(raw) else { return "" }
-        return Date(timeIntervalSince1970: time).formatted(date: .abbreviated, time: .shortened)
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stream_id = c.flexInt(.stream_id)
+        tv_archive = c.flexInt(.tv_archive)
+        tv_archive_duration = c.flexInt(.tv_archive_duration)
+        name = try? c.decode(String.self, forKey: .name)
+        category_id = c.flexString(.category_id)
+        stream_icon = c.flexString(.stream_icon)
+        epg_channel_id = c.flexString(.epg_channel_id)
+    }
+}
+
+extension KeyedDecodingContainer {
+    func flexString(_ key: Key) -> String? {
+        if let text = try? decode(String.self, forKey: key) { return text }
+        if let integer = try? decode(Int.self, forKey: key) { return String(integer) }
+        if let double = try? decode(Double.self, forKey: key) { return String(double) }
+        return nil
+    }
+    func flexInt(_ key: Key) -> Int? {
+        if let integer = try? decode(Int.self, forKey: key) { return integer }
+        if let text = try? decode(String.self, forKey: key) { return Int(text) }
+        return nil
     }
 }
