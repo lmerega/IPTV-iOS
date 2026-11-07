@@ -181,6 +181,20 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(catalog.counts["Commedia"], 2)
     }
 
+    func testAPICacheReadWriteInvalidate() {
+        let url = URL(string: "http://example.invalid/player_api.php?action=test&nonce=\(UUID().uuidString)")!
+        XCTAssertNil(APICache.read(url, policy: .catalog))
+        APICache.write(url, data: Data("[1]".utf8))
+        XCTAssertEqual(APICache.read(url, policy: .catalog), Data("[1]".utf8))
+        XCTAssertFalse(APICache.file(for: url).lastPathComponent.contains("example"))
+        XCTAssertNil(APICache.read(url, policy: .maxAge(-1)))
+        Thread.sleep(forTimeInterval: 0.05)
+        APICache.invalidateAll()
+        XCTAssertNil(APICache.read(url, policy: .catalog))
+        XCTAssertEqual(APICache.readStale(url), Data("[1]".utf8))
+        try? FileManager.default.removeItem(at: APICache.file(for: url))
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

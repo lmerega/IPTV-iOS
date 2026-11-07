@@ -112,7 +112,7 @@ struct LiveView: View {
             .searchable(text: $search, prompt: "Cerca un canale")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.reload() } }
+                    Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refreshAll() } }
                         .disabled(model.isLoading || model.current == nil)
                 }
             }

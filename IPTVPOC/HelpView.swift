@@ -16,6 +16,8 @@ struct HelpView: View {
                   text: "L'app scarica canali, guida programmi, film e serie. La prima volta controlla anche quali formati fornisce il server: puo' servire qualche secondo."),
             Entry(title: "3. Guarda",
                   text: "Scheda Live → scegli una categoria in alto → tocca un canale. Formato, motore video e replay sono gia' su Automatico e di solito non vanno toccati."),
+            Entry(title: "Aggiornare i contenuti",
+                  text: "Canali, categorie, film e serie vengono salvati sul telefono, cosi' l'app si apre subito. Quando il provider aggiunge contenuti premi il pulsante ↻ in Live, Film o Serie (o trascina in basso la lista dei film), oppure Impostazioni → Contenuti → Aggiorna. La guida programmi si aggiorna da sola ogni 3 ore."),
             Entry(title: "Hai solo un link M3U?",
                   text: "Scegli \"Playlist M3U\" e incolla il link. Se il link contiene get.php con utente e password compare il pulsante \"Converti in sorgente Xtream\": usalo, cosi' avrai anche guida e replay.")
         ]),

@@ -102,7 +102,14 @@ struct OnDemandView: View {
                     ContentUnavailableView.search(text: query)
                 }
             }
-            .task(id: model.selectedID) { await load() }
+            .task(id: "\(model.selectedID?.uuidString ?? "")-\(model.catalogRevision)") { await load() }
+            .refreshable { await model.refreshAll() }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refreshAll() } }
+                        .disabled(loading || model.isLoading || model.current == nil)
+                }
+            }
             .task(id: search) {
                 // Attende che si smetta di scrivere prima di filtrare.
                 if !search.isEmpty { try? await Task.sleep(nanoseconds: 300_000_000) }

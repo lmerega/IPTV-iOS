@@ -12,6 +12,9 @@ final class AppModel: ObservableObject {
     @Published var account: AccountInfo?
     @Published var nowNext: [String: [GuideProgram]] = [:]
     @Published var guideRevision = 0
+    /// Cambia a ogni "Aggiorna": film e serie si ricaricano.
+    @Published var catalogRevision = 0
+    @Published var catalogDate: Date?
     @Published var playing: PlayRequest?
 
     private var xmltv: [String: [GuideProgram]] = [:]
@@ -75,6 +78,13 @@ final class AppModel: ObservableObject {
 
     // MARK: Caricamento
 
+    /// Scarica di nuovo tutto dal provider (canali, guida, film, serie) e aggiorna la cache.
+    func refreshAll() async {
+        APICache.invalidateAll()
+        catalogRevision += 1
+        await reload()
+    }
+
     func reload() async {
         guard let source = current else { channels = []; return }
         loadGeneration += 1
@@ -88,6 +98,7 @@ final class AppModel: ObservableObject {
             let list = try await IPTVService.loadChannels(source)
             guard generation == loadGeneration else { return }
             channels = list
+            catalogDate = IPTVService.catalogDate(source)
         } catch {
             guard generation == loadGeneration else { return }
             channels = []
@@ -128,8 +139,9 @@ final class AppModel: ObservableObject {
     func loadNowNext(_ channel: IPTVChannel) async {
         guard nowNext[channel.id] == nil, let source = current else { return }
         if source.kind == "xtream" {
-            let list = await IPTVExtras.shortGuide(source, channel: channel, limit: 3)
-            if !Task.isCancelled { nowNext[channel.id] = list }
+            // La guida puo' arrivare dalla cache (fino a 3 ore): si scartano i programmi gia' finiti.
+            let list = await IPTVExtras.shortGuide(source, channel: channel, limit: 6).filter { $0.end > Date() }
+            if !Task.isCancelled { nowNext[channel.id] = Array(list.prefix(3)) }
         } else if let id = channel.epgID, let list = xmltv[id] {
             let upcoming = list.filter { $0.end > Date() }.sorted { $0.start < $1.start }
             nowNext[channel.id] = Array(upcoming.prefix(3))

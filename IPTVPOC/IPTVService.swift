@@ -21,7 +21,30 @@ enum IPTVService {
         }
     }
 
-    static func get(_ url: URL, timeout: TimeInterval = 30) async throws -> Data {
+    /// Scarica `url`, usando la cache su disco secondo `cache`. Se la rete fallisce e c'e' una copia salvata,
+    /// restituisce quella (cosi' l'app funziona anche con il server momentaneamente irraggiungibile).
+    static func get(_ url: URL, timeout: TimeInterval = 30, cache: CachePolicy = .none) async throws -> Data {
+        if case .none = cache { return try await fetch(url, timeout: timeout) }
+        if let hit = APICache.read(url, policy: cache) { return hit }
+        do {
+            let data = try await fetch(url, timeout: timeout)
+            APICache.write(url, data: data)
+            return data
+        } catch {
+            if let stale = APICache.readStale(url) { return stale }
+            throw error
+        }
+    }
+
+    /// Data della copia salvata dei canali della sorgente (per "Aggiornato il …").
+    static func catalogDate(_ source: IPTVSource) -> Date? {
+        let url: URL?
+        if source.kind == "xtream" { url = try? apiURL(source, action: "get_live_streams") }
+        else { url = URL(string: source.playlist.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        return url.flatMap(APICache.date(for:))
+    }
+
+    private static func fetch(_ url: URL, timeout: TimeInterval) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue("IPTVPOC/0.3", forHTTPHeaderField: "User-Agent")
@@ -98,7 +121,7 @@ enum IPTVService {
     static func loadChannels(_ source: IPTVSource) async throws -> [IPTVChannel] {
         if source.kind == "xtream" { return try await loadXtream(source) }
         let playlist = try baseURL(source.playlist)
-        let data = try await get(playlist, timeout: 90)
+        let data = try await get(playlist, timeout: 90, cache: .catalog)
         let body = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
         let channels = parseM3U(body, base: playlist, preferHLS: source.preferHLS && source.hlsSupported != false)
         if channels.isEmpty { throw IPTVError.noChannels }
@@ -180,7 +203,7 @@ enum IPTVService {
 
     static func categories(_ source: IPTVSource, action: String) async -> [String: String] {
         guard source.kind == "xtream", let url = try? apiURL(source, action: action),
-              let data = try? await get(url),
+              let data = try? await get(url, cache: .catalog),
               let objects = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [:] }
         var result: [String: String] = [:]
         for entry in objects {
@@ -193,7 +216,7 @@ enum IPTVService {
 
     private static func loadXtream(_ source: IPTVSource) async throws -> [IPTVChannel] {
         async let names = categories(source, action: "get_live_categories")
-        let data = try await get(try apiURL(source, action: "get_live_streams"), timeout: 120)
+        let data = try await get(try apiURL(source, action: "get_live_streams"), timeout: 120, cache: .catalog)
         let streams: [XtreamStream]
         do { streams = try JSONDecoder().decode([XtreamStream].self, from: data) }
         catch { throw IPTVError.badCredentials }

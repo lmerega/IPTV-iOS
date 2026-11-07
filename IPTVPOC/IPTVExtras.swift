@@ -21,7 +21,7 @@ enum IPTVExtras {
     }
 
     private static func listings(_ url: URL, source: IPTVSource, channel: IPTVChannel) async -> [GuideProgram] {
-        guard let data = try? await IPTVService.get(url),
+        guard let data = try? await IPTVService.get(url, cache: .maxAge(3 * 3600)),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let entries = root["epg_listings"] as? [[String: Any]] else { return [] }
         return entries.compactMap { parseProgram($0, channel: channel, zone: source.timeZone) }
@@ -54,7 +54,8 @@ enum IPTVExtras {
     // MARK: VOD e serie
 
     private static func list(_ source: IPTVSource, action: String) async throws -> [[String: Any]] {
-        let data = try await IPTVService.get(try IPTVService.apiURL(source, action: action), timeout: 120)
+        let data = try await IPTVService.get(try IPTVService.apiURL(source, action: action), timeout: 120,
+                                             cache: .catalog)
         guard let entries = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
             throw IPTVError.invalidResponse
         }
@@ -93,7 +94,8 @@ enum IPTVExtras {
 
     static func episodes(_ source: IPTVSource, seriesID: Int) async throws -> [OnDemandItem] {
         let data = try await IPTVService.get(try IPTVService.apiURL(source, action: "get_series_info",
-                                                                    [("series_id", String(seriesID))]), timeout: 60)
+                                                                    [("series_id", String(seriesID))]), timeout: 60,
+                                             cache: .catalog)
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw IPTVError.invalidResponse
         }
@@ -126,7 +128,8 @@ enum IPTVExtras {
     static func loadXMLTV(_ address: String) async -> [String: [GuideProgram]] {
         guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return [:] }
-        guard let data = try? await IPTVService.get(url, timeout: 120), data.count < 120_000_000 else { return [:] }
+        guard let data = try? await IPTVService.get(url, timeout: 120, cache: .maxAge(12 * 3600)),
+              data.count < 120_000_000 else { return [:] }
         return await Task.detached(priority: .utility) { () -> [String: [GuideProgram]] in
             let xml = gunzip(data) ?? data
             let parser = XMLTVParser()

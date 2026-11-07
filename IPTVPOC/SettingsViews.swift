@@ -8,6 +8,8 @@ struct SettingsView: View {
     @State private var showNew = false
     @State private var showKeyEditor = false
 
+    @State private var cacheBytes: Int64 = 0
+
     private var hlsLabel: String {
         switch model.current?.hlsSupported {
         case .some(true): return "Supportato"
@@ -173,6 +175,25 @@ struct SettingsView: View {
                             .foregroundStyle(line.ok ? Color.green : Color.red)
                             .font(.footnote)
                     }
+                }
+
+                if model.current != nil {
+                    Section("Contenuti") {
+                        Button("Aggiorna canali, guida, film e serie", systemImage: "arrow.clockwise") {
+                            Task { await model.refreshAll() }
+                        }
+                        .disabled(model.isLoading)
+                        LabeledContent("Ultimo aggiornamento",
+                                       value: model.catalogDate?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                        LabeledContent("Spazio cache", value: ByteCountFormatter.string(fromByteCount: cacheBytes, countStyle: .file))
+                        Button("Svuota cache", role: .destructive) {
+                            APICache.clear()
+                            cacheBytes = APICache.totalBytes
+                        }
+                        Text("Canali, categorie, film e serie vengono salvati sul telefono: all'avvio si aprono subito, senza riscaricarli. Premi Aggiorna quando il provider aggiunge contenuti. La guida programmi si riscarica da sola ogni 3 ore. Se il server non risponde viene usata l'ultima copia salvata.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .onAppear { cacheBytes = APICache.totalBytes }
                 }
 
                 Section {
