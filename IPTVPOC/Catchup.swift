@@ -108,18 +108,21 @@ enum CatchupResolver {
     }
 
     /// Scarica solo i primi byte di ogni formato candidato e verifica che sia video/HLS.
-    static func probe(source: IPTVSource, channel: IPTVChannel, start: Date,
-                      duration: TimeInterval) async -> [CatchupProbeResult] {
-        let candidates: [CatchupVariant] = source.kind == "xtream" ? xtreamCandidates : [.auto]
+    static func probe(source: IPTVSource, channel: IPTVChannel, start: Date, duration: TimeInterval,
+                      order: [CatchupVariant]? = nil, stopAtFirst: Bool = false,
+                      progress: (@Sendable (CatchupVariant) -> Void)? = nil) async -> [CatchupProbeResult] {
+        let candidates: [CatchupVariant] = source.kind == "xtream" ? (order ?? xtreamCandidates) : [.auto]
         var results: [CatchupProbeResult] = []
         for variant in candidates {
+            if stopAtFirst && results.last?.ok == true { break }
+            progress?(variant)
             guard let url = url(variant: variant, source: source, channel: channel,
                                 start: start, duration: duration) else {
                 results.append(CatchupProbeResult(variant: variant, ok: false, detail: "Non applicabile"))
                 continue
             }
             var request = URLRequest(url: url)
-            request.timeoutInterval = 12
+            request.timeoutInterval = 10
             request.setValue("bytes=0-4095", forHTTPHeaderField: "Range")
             do {
                 let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -143,7 +146,7 @@ enum CatchupResolver {
                     if let first = playlist.split(whereSeparator: \.isNewline).first(where: { !$0.hasPrefix("#") }),
                        let segment = URL(string: String(first), relativeTo: url)?.absoluteURL {
                         var segmentRequest = URLRequest(url: segment)
-                        segmentRequest.timeoutInterval = 12
+                        segmentRequest.timeoutInterval = 8
                         segmentRequest.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
                         let code = (try? await URLSession.shared.data(for: segmentRequest))
                             .flatMap { ($0.1 as? HTTPURLResponse)?.statusCode } ?? 0

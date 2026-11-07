@@ -14,8 +14,16 @@ struct GuideView: View {
 
     var body: some View {
         NavigationStack {
-            List(filtered) { channel in
-                NavigationLink(value: channel) { ChannelRow(channel: channel) }
+            List {
+                Section {
+                    ForEach(filtered) { channel in
+                        NavigationLink(value: channel) { ChannelRow(channel: channel) }
+                    }
+                } header: {
+                    Text(onlyReplay
+                         ? "\(filtered.count) canali con replay (di \(model.channels.count))"
+                         : "\(filtered.count) canali")
+                }
             }
             .listStyle(.plain)
             .navigationTitle("Catch-up")
@@ -23,7 +31,14 @@ struct GuideView: View {
             .searchable(text: $search, prompt: "Cerca un canale")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Toggle("Solo replay", isOn: $onlyReplay).toggleStyle(.button)
+                    Menu {
+                        Picker("Filtro", selection: $onlyReplay) {
+                            Text("Solo canali con replay").tag(true)
+                            Text("Tutti i canali").tag(false)
+                        }
+                    } label: {
+                        Label("Filtro", systemImage: "line.3.horizontal.decrease.circle")
+                    }
                 }
             }
             .overlay {

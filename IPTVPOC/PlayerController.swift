@@ -14,6 +14,8 @@ final class PlayerController: ObservableObject {
     @Published var catchupProgram: GuideProgram?
     @Published var position: Double = 0
     @Published var probeResults: [CatchupProbeResult] = []
+    @Published var isPaused = false
+    @Published var logLines: [String] = []
 
     var channel: IPTVChannel?
     var enginePreference = "auto"
@@ -48,6 +50,29 @@ final class PlayerController: ObservableObject {
                 : "Motore VLC non incluso in questa build."
         }
         vlc.onTime = { [weak self] seconds in self?.tick(seconds) }
+        vlc.onState = { [weak self] text in self?.log(text) }
+    }
+
+    func log(_ text: String) {
+        let stamp = Date().formatted(.dateTime.hour().minute().second())
+        logLines.append("\(stamp) \(text)")
+        if logLines.count > 120 { logLines.removeFirst(logLines.count - 120) }
+    }
+
+    private func describe(_ url: URL) -> String {
+        let keys = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name).joined(separator: ",") ?? ""
+        return "\(url.lastPathComponent)" + (keys.isEmpty ? "" : " [\(keys)]")
+    }
+
+    func togglePause() {
+        if engine == .vlc {
+            vlc.togglePause()
+            isPaused.toggle()
+        } else if player.timeControlStatus == .paused {
+            player.play(); isPaused = false
+        } else {
+            player.pause(); isPaused = true
+        }
     }
 
     private func tick(_ seconds: Double) {
@@ -71,6 +96,8 @@ final class PlayerController: ObservableObject {
         currentURL = url
         let chosen = forceEngine ?? engineFor(url)
         engine = chosen
+        isPaused = false
+        log("Apro \(describe(url)) con \(chosen == .vlc ? "VLC" : "AVPlayer")")
         if chosen == .vlc {
             player.pause()
             player.replaceCurrentItem(with: nil)
@@ -92,9 +119,11 @@ final class PlayerController: ObservableObject {
     private func handle(_ status: AVPlayerItem.Status, _ text: String?) {
         switch status {
         case .readyToPlay:
+            log("AVPlayer: pronto")
             isBuffering = false
             message = nil
         case .failed:
+            log("AVPlayer: errore \(text ?? "")")
             if let fallback = fallbackURL {
                 fallbackURL = nil
                 load(fallback)
@@ -132,9 +161,18 @@ final class PlayerController: ObservableObject {
         let duration = max(60, program.end.timeIntervalSince(start))
         if variant == .auto && source.kind == "xtream" {
             message = "Ricerca del formato replay compatibile…"
-            let results = await CatchupResolver.probe(source: source, channel: channel, start: start, duration: duration)
+            let preferTS = source.hlsSupported == false || (VLCEngine.isAvailable && enginePreference != "avplayer")
+            let order: [CatchupVariant] = preferTS ? [.php, .ts, .m3u8, .utc] : [.m3u8, .php, .ts, .utc]
+            let results = await CatchupResolver.probe(source: source, channel: channel, start: start, duration: duration,
+                                                      order: order, stopAtFirst: true) { [weak self] tried in
+                Task { @MainActor in
+                    self?.message = "Provo formato: \(tried.label)…"
+                    self?.log("Test formato \(tried.rawValue)")
+                }
+            }
             guard mine == generation else { return }
             probeResults = results
+            for r in results { log("Formato \(r.variant.rawValue): \(r.detail)") }
             guard let good = results.first(where: { $0.ok }) else {
                 isBuffering = false
                 message = "Nessun formato replay ha risposto. Apri la diagnostica replay."

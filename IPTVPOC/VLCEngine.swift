@@ -12,6 +12,8 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
     var onBuffering: ((Bool) -> Void)?
     var onError: (() -> Void)?
     var onTime: ((Double) -> Void)?
+    var onState: ((String) -> Void)?
+    var isPlaying: Bool { player.isPlaying }
 
     override init() {
         super.init()
@@ -39,8 +41,8 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         player.drawable = nil
     }
 
-    func setPaused(_ paused: Bool) {
-        if paused { player.pause() } else { player.play() }
+    func togglePause() {
+        if player.isPlaying { player.pause() } else { player.play() }
     }
 
     nonisolated func mediaPlayerStateChanged(_ aNotification: Notification!) {
@@ -56,9 +58,13 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
 
     private func handleState() {
         switch player.state {
-        case .playing: onBuffering?(false)
-        case .buffering, .opening: onBuffering?(true)
-        case .error: onError?()
+        case .playing: onState?("VLC: in riproduzione"); onBuffering?(false)
+        case .buffering: onState?("VLC: buffering"); onBuffering?(true)
+        case .opening: onState?("VLC: apertura flusso"); onBuffering?(true)
+        case .error: onState?("VLC: errore"); onError?()
+        case .paused: onState?("VLC: pausa")
+        case .ended: onState?("VLC: fine flusso")
+        case .stopped: onState?("VLC: fermo")
         default: break
         }
     }
@@ -71,10 +77,12 @@ final class VLCEngine: NSObject {
     var onBuffering: ((Bool) -> Void)?
     var onError: (() -> Void)?
     var onTime: ((Double) -> Void)?
+    var onState: ((String) -> Void)?
+    var isPlaying: Bool { false }
     func play(_ url: URL) { onError?() }
     func stop() {}
     func teardown() {}
-    func setPaused(_ paused: Bool) {}
+    func togglePause() {}
 }
 #endif
 
