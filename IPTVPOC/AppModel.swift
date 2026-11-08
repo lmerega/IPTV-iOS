@@ -459,7 +459,7 @@ final class AppModel: ObservableObject {
     /// 4 alla volta, con l'avanzamento "Guida: 12 di 80 canali". Gli altri si aggiornano quando compaiono.
     private func prefetchGuide(_ source: IPTVSource) async {
         var seen = Set<String>()
-        let list = (orderedFavorites + recentChannels + visibleChannels.prefix(80)).filter { seen.insert($0.id).inserted }
+        let list = (orderedFavorites + recentChannels + Array(visibleChannels.prefix(80))).filter { seen.insert($0.id).inserted }
         let targets = Array(list.prefix(120))
         guard !targets.isEmpty else { return }
         let progress = DownloadProgress.shared
