@@ -36,6 +36,64 @@ final class AppModel: ObservableObject {
     @Published var guideRevision = 0
     /// Cambia a ogni "Aggiorna": film e serie si ricaricano.
     @Published var catalogRevision = 0
+    @Published var movieRevision = 0
+    @Published var seriesRevision = 0
+    /// Parti in aggiornamento dalle impostazioni.
+    @Published var refreshing: Set<RefreshPart> = []
+
+    enum RefreshPart: String, CaseIterable, Identifiable {
+        case live, guide, movies, series
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .live: return "Canali"
+            case .guide: return "Guida programmi"
+            case .movies: return "Film"
+            case .series: return "Serie"
+            }
+        }
+    }
+
+    func revision(for kind: OnDemandKind) -> Int {
+        catalogRevision * 1000 + (kind == .movies ? movieRevision : seriesRevision)
+    }
+
+    /// Data dell'ultima copia salvata di una parte.
+    func refreshDate(_ part: RefreshPart) -> Date? {
+        guard let source = current else { return nil }
+        switch part {
+        case .live: return catalogDate
+        case .guide: return nil
+        case .movies: return IPTVService.cacheDate(source, action: "get_vod_streams")
+        case .series: return IPTVService.cacheDate(source, action: "get_series")
+        }
+    }
+
+    /// Aggiorna solo alcune parti (canali, guida, film, serie), con avanzamento nella striscia di caricamento.
+    func refresh(_ parts: Set<RefreshPart>) async {
+        guard let source = current else { return }
+        refreshing.formUnion(parts)
+        defer { refreshing.subtract(parts) }
+        for part in RefreshPart.allCases where parts.contains(part) {
+            switch part {
+            case .live:
+                APICache.invalidate(group: "live")
+                await reload()
+            case .guide:
+                APICache.invalidate(group: "guide")
+                NowNextStore.shared.clear()
+                guideRevision += 1
+                if source.kind == "m3u" { await reload() }
+            case .movies, .series:
+                guard source.kind == "xtream" else { continue }
+                let kind: OnDemandKind = part == .movies ? .movies : .series
+                APICache.invalidate(group: part == .movies ? "movies" : "series")
+                if kind == .movies { movieRevision += 1 } else { seriesRevision += 1 }
+                let key = OnDemandStore.key(kind: kind, sourceID: source.id.uuidString, revision: revision(for: kind))
+                _ = try? await OnDemandStore.shared.load(key: key, kind: kind, source: source)
+            }
+        }
+    }
     @Published var catalogDate: Date?
     @Published var playing: PlayRequest?
 
@@ -391,12 +449,11 @@ final class AppModel: ObservableObject {
 
     /// Prepara in background i cataloghi di film e serie (dalla cache), cosi' le schede si aprono subito.
     private func preloadOnDemand(_ source: IPTVSource) {
-        let revision = catalogRevision
         let sourceID = source.id.uuidString
         Task(priority: .utility) {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             for kind in [OnDemandKind.movies, .series] {
-                let key = OnDemandStore.key(kind: kind, sourceID: sourceID, revision: revision)
+                let key = OnDemandStore.key(kind: kind, sourceID: sourceID, revision: revision(for: kind))
                 _ = try? await OnDemandStore.shared.load(key: key, kind: kind, source: source)
             }
         }

@@ -45,12 +45,34 @@ enum APICache {
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: refreshKey)
     }
 
+    /// Gruppo di un indirizzo, per aggiornare una parte sola: "live", "guide", "movies", "series", "other".
+    static func group(for url: URL) -> String {
+        let action = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "action" })?.value ?? ""
+        if url.path.contains("xmltv") || action.contains("epg") || action.contains("data_table") { return "guide" }
+        if action.contains("vod") { return "movies" }
+        if action.contains("series") { return "series" }
+        if action.contains("live") || action.isEmpty && !url.path.contains("player_api") { return "live" }
+        return "other"
+    }
+
+    /// Le copie salvate di un gruppo non valgono piu': al prossimo accesso si riscaricano.
+    static func invalidate(group: String) {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: refreshKey + "." + group)
+    }
+
+    private static func refreshedAt(_ url: URL) -> Date {
+        let value = UserDefaults.standard.double(forKey: refreshKey + "." + group(for: url))
+        let groupDate = value > 0 ? Date(timeIntervalSince1970: value) : .distantPast
+        return max(refreshedAt, groupDate)
+    }
+
     static func date(for url: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: file(for: url).path))?[.modificationDate] as? Date
     }
 
     static func read(_ url: URL, policy: CachePolicy) -> Data? {
-        guard let saved = date(for: url), saved > refreshedAt else { return nil }
+        guard let saved = date(for: url), saved > refreshedAt(url) else { return nil }
         switch policy {
         case .none: return nil
         case .catalog: break

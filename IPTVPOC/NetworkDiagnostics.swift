@@ -11,8 +11,12 @@ struct DiagnosticLine: Identifiable {
 }
 
 private final class SpeedBox: @unchecked Sendable {
-    var bytes: Int64 = 0
-    var observation: NSKeyValueObservation?
+    private let lock = NSLock()
+    private var done = false
+    private var total: Int64 = 0
+    var isDone: Bool { lock.lock(); defer { lock.unlock() }; return done }
+    var totalBytes: Int64 { lock.lock(); defer { lock.unlock() }; return total }
+    func finished(bytes: Int64) { lock.lock(); done = true; total = bytes; lock.unlock() }
 }
 
 private final class OneShot<Value>: @unchecked Sendable {
@@ -115,35 +119,43 @@ final class NetworkDiagnostics: ObservableObject {
 
     private static func ms(_ start: Date) -> Int { Int(Date().timeIntervalSince(start) * 1000) }
 
-    /// Velocita' scaricando per 4 secondi un catalogo grande del provider (film o playlist).
+    /// Velocita' di download su un catalogo grande del provider (film o playlist). Il proxy puo' impiegare
+    /// alcuni secondi prima di mandare il primo byte: si aspetta fino a 20 secondi e si misura per 5 secondi
+    /// dal primo byte ricevuto, leggendo i byte arrivati direttamente dalla richiesta.
     nonisolated static func downloadSpeed(_ source: IPTVSource) async -> Double? {
         let address: URL?
         if source.kind == "xtream" { address = try? IPTVService.apiURL(source, action: "get_vod_streams") }
         else { address = URL(string: source.playlist) }
         guard let url = address else { return nil }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 10
+        request.timeoutInterval = 25
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Double?, Never>) in
-            let once = OneShot(continuation)
-            let box = SpeedBox()
-            let start = Date()
-            func result() -> Double? {
-                let seconds = max(0.1, Date().timeIntervalSince(start))
-                let bytes = box.bytes
-                return bytes > 0 ? Double(bytes) * 8 / seconds / 1_000_000 : nil
-            }
-            let task = URLSession.shared.dataTask(with: request) { _, _, _ in once.finish(result()) }
-            box.observation = task.progress.observe(\.completedUnitCount) { progress, _ in
-                box.bytes = progress.completedUnitCount
-            }
-            task.resume()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 4) {
-                once.finish(result())
-                task.cancel()
-                box.observation?.invalidate()
-            }
+        let state = SpeedBox()
+        let task = URLSession.shared.dataTask(with: request) { data, _, _ in
+            state.finished(bytes: Int64(data?.count ?? 0))
         }
+        task.resume()
+        defer { task.cancel() }
+        let started = Date()
+        var firstByte: Date?
+        var bytesAtFirst: Int64 = 0
+        while Date().timeIntervalSince(started) < 20 {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            let received = max(task.countOfBytesReceived, state.totalBytes)
+            if firstByte == nil, received > 0 {
+                firstByte = Date()
+                bytesAtFirst = received
+            }
+            if let first = firstByte, Date().timeIntervalSince(first) >= 5 || state.isDone {
+                let seconds = max(0.25, Date().timeIntervalSince(first))
+                let bytes = received - bytesAtFirst
+                // Download finito subito (catalogo piccolo): si usa tutto il tempo dall'avvio.
+                if bytes <= 0 { return Double(received) * 8 / max(0.25, Date().timeIntervalSince(started)) / 1_000_000 }
+                return Double(bytes) * 8 / seconds / 1_000_000
+            }
+            if state.isDone && firstByte == nil { break }
+        }
+        return nil
     }
 
     nonisolated static func currentPath() async -> NWPath {

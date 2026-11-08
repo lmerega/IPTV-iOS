@@ -189,10 +189,11 @@ struct GlobalSearchView: View {
         // Se i cataloghi non sono ancora in memoria, li prepara (dalla cache su disco).
         if let source = model.current, source.kind == "xtream" {
             let sourceID = source.id.uuidString
-            let revision = model.catalogRevision
-            preparing = OnDemandStore.shared.catalog(OnDemandStore.key(kind: .movies, sourceID: sourceID, revision: revision)) == nil
+            preparing = OnDemandStore.shared.catalog(OnDemandStore.key(kind: .movies, sourceID: sourceID,
+                                                                       revision: model.revision(for: .movies))) == nil
             for kind in [OnDemandKind.movies, .series] {
-                _ = try? await OnDemandStore.shared.load(key: OnDemandStore.key(kind: kind, sourceID: sourceID, revision: revision),
+                _ = try? await OnDemandStore.shared.load(key: OnDemandStore.key(kind: kind, sourceID: sourceID,
+                                                                                revision: model.revision(for: kind)),
                                                          kind: kind, source: source)
             }
             preparing = false

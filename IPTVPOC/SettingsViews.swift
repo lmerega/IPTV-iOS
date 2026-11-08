@@ -197,18 +197,41 @@ struct SettingsView: View {
 
                 if model.current != nil {
                     Section("Contenuti") {
-                        Button("Aggiorna canali, guida, film e serie", systemImage: "arrow.clockwise") {
-                            Task { await model.refreshAll() }
+                        ForEach(AppModel.RefreshPart.allCases) { part in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(part.title)
+                                    if let date = model.refreshDate(part) {
+                                        Text("aggiornati \(date.formatted(.relative(presentation: .named)))")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    } else if part == .guide {
+                                        Text("si aggiorna da sola ogni 3 ore").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if model.refreshing.contains(part) {
+                                    ProgressView()
+                                } else {
+                                    Button { Task { await model.refresh([part]) } } label: {
+                                        Image(systemName: "arrow.clockwise")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .disabled(!model.refreshing.isEmpty)
+                                    .accessibilityLabel("Aggiorna \(part.title)")
+                                }
+                            }
                         }
-                        .disabled(model.isLoading)
-                        LabeledContent("Ultimo aggiornamento",
-                                       value: model.catalogDate?.formatted(date: .abbreviated, time: .shortened) ?? "—")
+                        Button("Aggiorna tutto", systemImage: "arrow.clockwise.circle") {
+                            Task { await model.refresh(Set(AppModel.RefreshPart.allCases)) }
+                        }
+                        .disabled(!model.refreshing.isEmpty || model.isLoading)
+                        LoadingBanner().listRowInsets(EdgeInsets())
                         LabeledContent("Spazio cache", value: ByteCountFormatter.string(fromByteCount: cacheBytes, countStyle: .file))
                         Button("Svuota cache", role: .destructive) {
                             APICache.clear()
                             cacheBytes = APICache.totalBytes
                         }
-                        Text("Canali, categorie, film e serie vengono salvati sul telefono: all'avvio si aprono subito, senza riscaricarli. Premi Aggiorna quando il provider aggiunge contenuti. La guida programmi si riscarica da sola ogni 3 ore. Se il server non risponde viene usata l'ultima copia salvata.")
+                        Text("Canali, categorie, film e serie vengono salvati sul telefono: all'avvio si aprono subito, senza riscaricarli. Aggiorna una parte alla volta con ↻ oppure tutto insieme; durante il download compare l'avanzamento. La guida programmi si riscarica da sola ogni 3 ore. Se il server non risponde viene usata l'ultima copia salvata.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .onAppear { cacheBytes = APICache.totalBytes }

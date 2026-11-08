@@ -244,7 +244,7 @@ struct LiveView: View {
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refreshAll() } }
+                    Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refresh([.live, .guide]) } }
                         .disabled(model.isLoading || model.current == nil)
                 }
             }

@@ -180,7 +180,7 @@ struct OnDemandView: View {
 
     private var kindKey: String { OnDemandStore.kindKey(kind) }
     private var storeKey: String {
-        OnDemandStore.key(kind: kind, sourceID: model.selectedID?.uuidString ?? "", revision: model.catalogRevision)
+        OnDemandStore.key(kind: kind, sourceID: model.selectedID?.uuidString ?? "", revision: model.revision(for: kind))
     }
     private var hidden: Set<String> { kind == .movies ? model.hiddenMovies : model.hiddenSeries }
     private var catalogDate: Date? {
@@ -229,10 +229,12 @@ struct OnDemandView: View {
                 }
             }
             .task(id: storeKey) { await load(key: storeKey) }
-            .refreshable { await model.refreshAll() }
+            .refreshable { await model.refresh([kind == .movies ? .movies : .series]) }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Aggiorna", systemImage: "arrow.clockwise") { Task { await model.refreshAll() } }
+                    Button("Aggiorna", systemImage: "arrow.clockwise") {
+                        Task { await model.refresh([kind == .movies ? .movies : .series]) }
+                    }
                         .disabled(loading || model.isLoading || model.current == nil)
                 }
             }
