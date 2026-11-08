@@ -250,6 +250,11 @@ final class AppModel: ObservableObject {
         channelByID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
+    /// Programma in onda su un canale con archivio: si puo' guardare dall'inizio in differita.
+    func canStartOver(_ program: GuideProgram, channel: IPTVChannel) -> Bool {
+        program.isLive && channel.archive
+    }
+
     func playReplay(_ channel: IPTVChannel, _ program: GuideProgram) {
         playing = PlayRequest(title: program.title, url: channel.url, channel: channel, program: program)
     }

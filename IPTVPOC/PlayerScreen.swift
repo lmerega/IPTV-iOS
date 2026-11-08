@@ -23,6 +23,7 @@ struct PlayerScreen: View {
     @State private var tapToken = UUID()
     @State private var toast: String?
     @State private var resumeOffer: Double?
+    @State private var liveChoice: GuideProgram?
     @State private var nextCountdown: Int?
     @AppStorage("videoAspect") private var aspectRaw = VideoAspect.fit.rawValue
     private var aspect: VideoAspect { VideoAspect(rawValue: aspectRaw) ?? .fit }
@@ -57,6 +58,14 @@ struct PlayerScreen: View {
         }
         .onChange(of: aspectRaw, initial: true) { controller.vlc.aspect = aspect }
         .onChange(of: controller.finished) { _, done in if done { startNextCountdown() } }
+        .confirmationDialog(liveChoice?.title ?? "", isPresented: Binding(
+            get: { liveChoice != nil }, set: { if !$0 { liveChoice = nil } }), titleVisibility: .visible) {
+            if let program = liveChoice {
+                Button("Guarda dall'inizio (differita)") { startOver(program) }
+                Button("Guarda in diretta") { goLive() }
+            }
+            Button("Annulla", role: .cancel) {}
+        }
         .overlay(alignment: .bottomTrailing) { resumeAndNextOverlay }
         .task { await start() }
         .onDisappear {
@@ -496,6 +505,14 @@ struct PlayerScreen: View {
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
                 }
+                if let channel = request.channel, controller.catchupProgram == nil, let program = liveProgram,
+                   model.canStartOver(program, channel: channel) {
+                    Button { startOver(program) } label: {
+                        Label("Dall'inizio", systemImage: "backward.end.alt").labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .accessibilityLabel("Guarda il programma in onda dall'inizio")
+                }
                 if request.channel != nil, model.previousChannelID != nil, model.previousChannelID != request.channel?.id {
                     Button { model.playPrevious(fullscreen: fullscreen) } label: {
                         Label("Canale precedente", systemImage: "arrow.uturn.backward").labelStyle(.iconOnly)
@@ -543,7 +560,9 @@ struct PlayerScreen: View {
 
     private func select(_ program: GuideProgram) {
         guard let channel = request.channel, let source = model.current else { return }
-        if program.isLive {
+        if model.canStartOver(program, channel: channel) {
+            liveChoice = program
+        } else if program.isLive {
             controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
         } else if model.canReplay(program, channel: channel) {
             Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
@@ -580,6 +599,19 @@ struct PlayerScreen: View {
             controller.seekToRecordingStart()
         }
         if let channel = request.channel { programs = await model.guide(for: channel) }
+    }
+
+    /// Programma in onda adesso (dalla guida del player o da "ora in onda").
+    private var liveProgram: GuideProgram? {
+        let now = Date()
+        if let live = programs.first(where: { $0.start <= now && $0.end > now }) { return live }
+        return request.channel.flatMap { model.nowNext[$0.id]?.first(where: { $0.start <= now && $0.end > now }) }
+    }
+
+    /// Riparte dall'inizio del programma in onda, in differita dall'archivio del provider.
+    private func startOver(_ program: GuideProgram) {
+        guard let channel = request.channel, let source = model.current else { return }
+        Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
     }
 
     /// Fine del programma in onda (per il timer "a fine programma").

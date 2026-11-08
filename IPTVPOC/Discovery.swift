@@ -350,6 +350,9 @@ struct GuideGridView: View {
         if model.canReplay(program, channel: channel) {
             Button("Guarda dall'inizio (replay)") { model.playReplay(channel, program) }
         }
+        if model.canStartOver(program, channel: channel) {
+            Button("Guarda dall'inizio (differita)") { model.playReplay(channel, program) }
+        }
         if program.end > Date() {
             if scheduler.isScheduled(program, channel: channel) {
                 Button("Annulla registrazione programmata", role: .destructive) {

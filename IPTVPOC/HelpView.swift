@@ -88,6 +88,8 @@ struct HelpView: View {
         ("Replay (catch-up): rivedere programmi passati", [
             Entry(title: "Come si usa",
                   text: "Scheda Guida → scegli un canale (o usa la griglia) → tocca un programma gia' andato in onda. Nel player usi pausa, ±30 secondi e la barra come per un film."),
+            Entry(title: "Programma in onda dall'inizio",
+                  text: "Sui canali con replay puoi rivedere dall'inizio anche il programma in onda adesso (per esempio un film iniziato da un'ora): nella guida tocca il programma con \"Ora\" e scegli \"Guarda dall'inizio (differita)\". Nel player c'e' anche il pulsante ⏮ accanto a Diretta. Si guarda dall'archivio del provider: puoi andare avanti fino a pochi secondi dalla diretta, e \"Diretta\" ti riporta al live."),
             Entry(title: "Filtro canali",
                   text: "\"Solo canali con replay\" mostra solo i canali di cui il provider conserva le puntate. \"Tutti i canali\" mostra anche quelli con la sola guida, senza replay."),
             Entry(title: "Impostazioni → Formato",

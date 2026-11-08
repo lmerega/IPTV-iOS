@@ -72,6 +72,7 @@ struct ChannelGuideView: View {
     let channel: IPTVChannel
     @State private var programs: [GuideProgram] = []
     @State private var loading = true
+    @State private var liveChoice: GuideProgram?
 
     private var days: [(Date, [GuideProgram])] {
         let grouped = Dictionary(grouping: programs) { Calendar.current.startOfDay(for: $0.start) }
@@ -99,6 +100,18 @@ struct ChannelGuideView: View {
                 if let live = list.first(where: { $0.isLive }) {
                     proxy.scrollTo(live.id, anchor: .center)
                 }
+            }
+        }
+        .confirmationDialog(liveChoice?.title ?? "", isPresented: Binding(
+            get: { liveChoice != nil }, set: { if !$0 { liveChoice = nil } }), titleVisibility: .visible) {
+            if let program = liveChoice {
+                Button("Guarda dall'inizio (differita)") { model.playReplay(channel, program) }
+                Button("Guarda in diretta") { model.play(channel) }
+            }
+            Button("Annulla", role: .cancel) {}
+        } message: {
+            if let program = liveChoice {
+                Text("In onda dalle \(program.start.formatted(date: .omitted, time: .shortened)): puoi ripartire dall'inizio del programma.")
             }
         }
         .navigationTitle(channel.name)
@@ -151,7 +164,8 @@ struct ChannelGuideView: View {
     }
 
     private func open(_ program: GuideProgram) {
-        if program.isLive { model.play(channel) }
+        if model.canStartOver(program, channel: channel) { liveChoice = program }
+        else if program.isLive { model.play(channel) }
         else if model.canReplay(program, channel: channel) { model.playReplay(channel, program) }
     }
 }
