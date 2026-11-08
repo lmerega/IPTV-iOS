@@ -105,6 +105,37 @@ final class WatchHistory: ObservableObject {
     }
 }
 
+// MARK: - Guida breve dei canali (ora in onda / a seguire)
+
+/// Le righe dei canali ricevono la guida una alla volta: gli aggiornamenti vengono raccolti e applicati
+/// insieme ogni 0,3 secondi, cosi' lo scorrimento resta fluido anche su elenchi lunghi.
+@MainActor
+final class NowNextStore: ObservableObject {
+    static let shared = NowNextStore()
+    @Published private(set) var items: [String: [GuideProgram]] = [:]
+    private var pending: [String: [GuideProgram]] = [:]
+    private var flushScheduled = false
+
+    func set(_ channelID: String, _ programs: [GuideProgram]) {
+        pending[channelID] = programs
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            items.merge(pending) { _, new in new }
+            pending = [:]
+            flushScheduled = false
+        }
+    }
+
+    func has(_ channelID: String) -> Bool { items[channelID] != nil || pending[channelID] != nil }
+
+    func clear() {
+        items = [:]
+        pending = [:]
+    }
+}
+
 // MARK: - Registrazioni programmate
 
 struct ScheduledRecording: Codable, Identifiable, Hashable {

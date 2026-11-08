@@ -95,7 +95,7 @@ struct LiveView: View {
         var list = ["Tutti"]
         if !model.favorites.isEmpty { list.append("Preferiti") }
         if !model.recents.isEmpty { list.append("Recenti") }
-        list.append(contentsOf: Set(model.visibleChannels.map(\.group)).sorted())
+        list.append(contentsOf: model.liveGroups)
         return list
     }
 
@@ -150,7 +150,7 @@ struct LiveView: View {
                 } else {
                     VStack(spacing: 0) {
                         CategoryPicker(options: groups, selection: $group, counts: {
-                            var map = Dictionary(model.visibleChannels.map { ($0.group, 1) }, uniquingKeysWith: +)
+                            var map = model.groupCounts
                             map["Tutti"] = model.visibleChannels.count
                             map["Preferiti"] = model.orderedFavorites.count
                             map["Recenti"] = model.recentChannels.count
@@ -207,6 +207,7 @@ struct LiveView: View {
 
 struct ChannelRow: View {
     @EnvironmentObject private var model: AppModel
+    @ObservedObject private var guide = NowNextStore.shared
     let channel: IPTVChannel
 
     var body: some View {
@@ -214,7 +215,7 @@ struct ChannelRow: View {
             ChannelLogo(url: channel.logo)
             VStack(alignment: .leading, spacing: 2) {
                 Text(channel.name).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
-                if let program = model.nowNext[channel.id]?.first(where: { $0.end > Date() }) {
+                if let program = guide.items[channel.id]?.first(where: { $0.end > Date() }) {
                     Text("\(program.start.formatted(date: .omitted, time: .shortened)) \(program.title)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 } else {
@@ -226,7 +227,12 @@ struct ChannelRow: View {
             if channel.archive { Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary) }
         }
         .contentShape(Rectangle())
-        .task(id: model.guideRevision) { await model.loadNowNext(channel) }
+        .task(id: model.guideRevision) {
+            // Scorrendo veloce le righe passano senza chiedere la guida: si carica solo dove ci si ferma.
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled else { return }
+            await model.loadNowNext(channel)
+        }
     }
 }
 

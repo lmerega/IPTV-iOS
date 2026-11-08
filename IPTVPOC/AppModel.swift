@@ -5,7 +5,13 @@ import SwiftUI
 final class AppModel: ObservableObject {
     @Published var profiles: [IPTVSource] = []
     @Published var selectedID: UUID?
-    @Published var channels: [IPTVChannel] = []
+    @Published var channels: [IPTVChannel] = [] { didSet { rebuildChannelIndex() } }
+    /// Canali delle categorie non nascoste, categorie e conteggi: calcolati una volta quando cambiano
+    /// i canali o le categorie nascoste, non a ogni aggiornamento della schermata.
+    @Published private(set) var visibleChannels: [IPTVChannel] = []
+    private(set) var liveGroups: [String] = []
+    private(set) var groupCounts: [String: Int] = [:]
+    private(set) var channelByID: [String: IPTVChannel] = [:]
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var favorites: Set<String> = []
@@ -14,7 +20,7 @@ final class AppModel: ObservableObject {
     /// Ultimi canali guardati, dal piu' recente.
     @Published var recents: [String] = []
     /// Categorie nascoste dall'utente: canali live, film, serie.
-    @Published var hiddenLive: Set<String> = []
+    @Published var hiddenLive: Set<String> = [] { didSet { rebuildChannelIndex() } }
     @Published var hiddenMovies: Set<String> = []
     @Published var hiddenSeries: Set<String> = []
     /// Elenco da cui e' stato aperto l'ultimo canale (per lo zapping).
@@ -22,7 +28,9 @@ final class AppModel: ObservableObject {
     /// Canale guardato prima di quello attuale.
     @Published var previousChannelID: String?
     @Published var account: AccountInfo?
-    @Published var nowNext: [String: [GuideProgram]] = [:]
+    /// "Ora in onda / a seguire": sta in un oggetto separato, cosi' ogni riga che riceve la sua guida
+    /// non fa ricalcolare l'intero elenco dei canali.
+    var nowNext: [String: [GuideProgram]] { NowNextStore.shared.items }
     @Published var guideRevision = 0
     /// Cambia a ogni "Aggiorna": film e serie si ricaricano.
     @Published var catalogRevision = 0
@@ -106,7 +114,7 @@ final class AppModel: ObservableObject {
         let generation = loadGeneration
         isLoading = true
         errorMessage = nil
-        nowNext = [:]
+        NowNextStore.shared.clear()
         xmltv = [:]
         defer { if generation == loadGeneration { isLoading = false } }
         do {
@@ -155,14 +163,14 @@ final class AppModel: ObservableObject {
     // MARK: Guida
 
     func loadNowNext(_ channel: IPTVChannel) async {
-        guard nowNext[channel.id] == nil, let source = current else { return }
+        guard !NowNextStore.shared.has(channel.id), let source = current else { return }
         if source.kind == "xtream" {
             // La guida puo' arrivare dalla cache (fino a 3 ore): si scartano i programmi gia' finiti.
             let list = await IPTVExtras.shortGuide(source, channel: channel, limit: 6).filter { $0.end > Date() }
-            if !Task.isCancelled { nowNext[channel.id] = Array(list.prefix(3)) }
+            if !Task.isCancelled { NowNextStore.shared.set(channel.id, Array(list.prefix(3))) }
         } else if let id = channel.epgID, let list = xmltv[id] {
             let upcoming = list.filter { $0.end > Date() }.sorted { $0.start < $1.start }
-            nowNext[channel.id] = Array(upcoming.prefix(3))
+            NowNextStore.shared.set(channel.id, Array(upcoming.prefix(3)))
         }
     }
 
@@ -217,7 +225,7 @@ final class AppModel: ObservableObject {
         let list = zapList.contains(channel.id) ? zapList : visibleChannels.map(\.id)
         guard !list.isEmpty, let index = list.firstIndex(of: channel.id) else { return nil }
         let next = list[(index + delta + list.count) % list.count]
-        return channels.first { $0.id == next }
+        return channelByID[next]
     }
 
     /// Torna al canale guardato prima.
@@ -226,8 +234,15 @@ final class AppModel: ObservableObject {
         play(channel, fullscreen: fullscreen)
     }
 
-    /// Canali delle categorie non nascoste.
-    var visibleChannels: [IPTVChannel] { channels.filter { !hiddenLive.contains($0.group) } }
+    private func rebuildChannelIndex() {
+        let visible = channels.filter { !hiddenLive.contains($0.group) }
+        visibleChannels = visible
+        var counts: [String: Int] = [:]
+        for channel in visible { counts[channel.group, default: 0] += 1 }
+        groupCounts = counts
+        liveGroups = counts.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        channelByID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 
     func playReplay(_ channel: IPTVChannel, _ program: GuideProgram) {
         playing = PlayRequest(title: program.title, url: channel.url, channel: channel, program: program)
@@ -271,15 +286,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Preferiti nell'ordine scelto (solo canali esistenti).
-    var orderedFavorites: [IPTVChannel] {
-        let byID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return favoriteOrder.compactMap { byID[$0] }
-    }
+    var orderedFavorites: [IPTVChannel] { favoriteOrder.compactMap { channelByID[$0] } }
 
-    var recentChannels: [IPTVChannel] {
-        let byID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return recents.compactMap { byID[$0] }
-    }
+    var recentChannels: [IPTVChannel] { recents.compactMap { channelByID[$0] } }
 
     private func addRecent(_ channel: IPTVChannel) {
         recents.removeAll { $0 == channel.id }
