@@ -15,7 +15,6 @@ struct ContentView: View {
             Tab("Cerca", systemImage: "magnifyingglass", role: .search) { GlobalSearchView() }
         }
         .tabViewStyle(.sidebarAdaptable)
-        .environmentObject(model)
         .onChange(of: scenePhase) { _, phase in
             // Al ritorno in primo piano: parte un'eventuale registrazione programmata.
             if phase == .active { RecordingScheduler.shared.check() }
@@ -45,6 +44,8 @@ struct ContentView: View {
         )) {
             Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+        // In fondo: il modello deve arrivare anche agli avvisi qui sopra (ConnectionAlerts), non solo alle schede.
+        .environmentObject(model)
     }
 }
 
