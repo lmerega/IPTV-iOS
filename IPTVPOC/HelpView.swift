@@ -139,6 +139,18 @@ struct HelpView: View {
             Entry(title: "URL EPG XMLTV",
                   text: "Solo per M3U: l'indirizzo della guida programmi. Accetta anche file compressi .gz.")
         ]),
+        ("Una sola connessione", [
+            Entry(title: "Perche'",
+                  text: "Molti abbonamenti permettono una o due connessioni contemporanee. L'app ne usa sempre una sola: diretta, timeshift e registrazione condividono lo stesso download."),
+            Entry(title: "Registrare e guardare",
+                  text: "Mentre guardi puoi registrare solo il canale che stai guardando, con il timeshift attivo. Se scegli un altro canale, un replay o un film durante una registrazione, l'app chiede prima di fermarla. I file gia' registrati si guardano sempre."),
+            Entry(title: "Replay e timeshift",
+                  text: "Passando a un replay (anche \"dall'inizio\" del programma in onda) il download della diretta si ferma e la barra del replay sostituisce quella del timeshift. \"Diretta\" lo fa ripartire."),
+            Entry(title: "Registrazioni programmate",
+                  text: "Se all'ora di inizio stai guardando altro, l'app chiede se chiudere la visione per registrare o saltare la registrazione."),
+            Entry(title: "Pausa lunga",
+                  text: "Mettendo in pausa un replay o un film per piu' di 15 secondi l'app chiude la connessione al provider; alla ripresa riparte esattamente dal punto della pausa, senza ripetere o saltare pezzi.")
+        ]),
         ("Scadenze", [
             Entry(title: "Avvisi",
                   text: "Una striscia gialla in Live avvisa quando l'installazione dell'app scade entro 2 giorni (rinnovala con Sideloadly) o l'abbonamento IPTV entro 7. Arrivano anche notifiche: il giorno prima per l'app, 3 giorni prima per l'abbonamento. Le date sono in Impostazioni.")

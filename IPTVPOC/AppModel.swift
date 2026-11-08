@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
         loadFavorites()
         WatchHistory.shared.use(profile: selectedID)
         RecordingScheduler.shared.channelLookup = { [weak self] id in self?.channels.first { $0.id == id } }
+        RecordingScheduler.shared.canStart = { [weak self] item, channel in self?.canStartScheduled(item, channel) ?? true }
         Task { await reload() }
     }
 
@@ -198,13 +199,65 @@ final class AppModel: ObservableObject {
 
     /// Canale scelto mentre si registra un altro canale: serve conferma (cambiando canale la registrazione si ferma).
     @Published var pendingChannel: IPTVChannel?
+    /// Contenuto (replay, film, episodio) scelto durante una registrazione: con una sola connessione serve conferma.
+    @Published var pendingPlayback: PlayRequest?
+    /// Registrazione programmata arrivata mentre si guarda altro.
+    @Published var pendingScheduled: ScheduledConflict?
+
+    /// Apre un contenuto rispettando la regola "una sola connessione verso il provider":
+    /// durante una registrazione chiede prima di fermarla (i file registrati sul telefono si aprono sempre).
+    func open(_ request: PlayRequest) {
+        if needsRecordingStop(request) {
+            pendingPlayback = request
+            return
+        }
+        playing = request
+    }
+
+    func confirmPendingPlayback() {
+        guard let request = pendingPlayback else { return }
+        pendingPlayback = nil
+        DVRManager.shared.stop()
+        playing = request
+    }
+
+    private func needsRecordingStop(_ request: PlayRequest) -> Bool {
+        let dvr = DVRManager.shared
+        guard dvr.isRecording, !request.url.isFileURL else { return false }
+        if let channel = request.channel, request.program == nil, channel.id == dvr.recordingChannel?.id { return false }
+        return true
+    }
+
+    /// Registrazione programmata: parte subito se non si sta guardando altro, altrimenti chiede.
+    private func canStartScheduled(_ item: ScheduledRecording, _ channel: IPTVChannel) -> Bool {
+        guard let current = playing, !current.url.isFileURL else { return true }
+        if current.channel?.id == channel.id && current.program == nil { return true }
+        if pendingScheduled == nil { pendingScheduled = ScheduledConflict(item: item, channel: channel) }
+        return false
+    }
+
+    func confirmScheduled() {
+        guard pendingScheduled != nil else { return }
+        pendingScheduled = nil
+        playing = nil
+        Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            RecordingScheduler.shared.check()
+        }
+    }
+
+    func skipScheduled() {
+        guard let conflict = pendingScheduled else { return }
+        pendingScheduled = nil
+        RecordingScheduler.shared.cancel(conflict.item)
+    }
 
     private var pendingFullscreen = false
     private var currentChannelID: String?
 
     func play(_ channel: IPTVChannel, fullscreen: Bool = false) {
         let dvr = DVRManager.shared
-        if dvr.isBufferRecording, let recording = dvr.recordingChannel, recording.id != channel.id {
+        if dvr.isRecording, let recording = dvr.recordingChannel, recording.id != channel.id {
             pendingChannel = channel
             pendingFullscreen = fullscreen
             return
@@ -216,6 +269,7 @@ final class AppModel: ObservableObject {
     func confirmPendingChannel() {
         guard let channel = pendingChannel else { return }
         pendingChannel = nil
+        DVRManager.shared.stop()
         open(channel, fullscreen: pendingFullscreen)
     }
 
@@ -256,7 +310,7 @@ final class AppModel: ObservableObject {
     }
 
     func playReplay(_ channel: IPTVChannel, _ program: GuideProgram) {
-        playing = PlayRequest(title: program.title, url: channel.url, channel: channel, program: program)
+        open(PlayRequest(title: program.title, url: channel.url, channel: channel, program: program))
     }
 
     // MARK: Preferiti, recenti, categorie nascoste

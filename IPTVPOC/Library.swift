@@ -229,6 +229,13 @@ final class NowNextStore: ObservableObject {
 
 // MARK: - Registrazioni programmate
 
+/// Registrazione programmata arrivata mentre si guarda un altro contenuto.
+struct ScheduledConflict: Identifiable {
+    let item: ScheduledRecording
+    let channel: IPTVChannel
+    var id: UUID { item.id }
+}
+
 struct ScheduledRecording: Codable, Identifiable, Hashable {
     var id = UUID()
     var channelID: String
@@ -247,6 +254,8 @@ final class RecordingScheduler: ObservableObject {
     private var timer: Timer?
     /// Trova il canale dal suo identificativo (fornito da AppModel).
     var channelLookup: ((String) -> IPTVChannel?)?
+    /// Decide se la registrazione puo' partire ora (una sola connessione: non mentre si guarda altro).
+    var canStart: ((ScheduledRecording, IPTVChannel) -> Bool)?
 
     private let key = "scheduled.recordings"
     /// Margini: si parte 1 minuto prima e si finisce 3 minuti dopo l'orario della guida.
@@ -303,6 +312,7 @@ final class RecordingScheduler: ObservableObject {
         guard !dvr.isRecording,
               let due = items.first(where: { $0.start.addingTimeInterval(-Self.leadIn) <= now }),
               let channel = channelLookup?(due.channelID) else { return }
+        if let canStart, !canStart(due, channel) { return }
         items.removeAll { $0.id == due.id }
         save()
         dvr.start(channel: channel, stopAt: due.end.addingTimeInterval(Self.tail))

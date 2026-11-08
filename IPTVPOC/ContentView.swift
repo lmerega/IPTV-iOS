@@ -23,8 +23,9 @@ struct ContentView: View {
         .fullScreenCover(item: $model.playing) { request in
             PlayerScreen(request: request).environmentObject(model)
         }
+        .modifier(ConnectionAlerts(inPlayer: false))
         .alert("Registrazione in corso", isPresented: Binding(
-            get: { model.pendingChannel != nil },
+            get: { model.pendingChannel != nil && model.playing == nil },
             set: { if !$0 { model.pendingChannel = nil } }
         )) {
             Button("Cambia canale e ferma la registrazione", role: .destructive) { model.confirmPendingChannel() }
@@ -44,6 +45,49 @@ struct ContentView: View {
         )) {
             Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+    }
+}
+
+/// Avvisi della regola "una sola connessione": contenuto scelto durante una registrazione e registrazione
+/// programmata arrivata mentre si guarda altro. Usati sia nella schermata principale sia nel player.
+struct ConnectionAlerts: ViewModifier {
+    @EnvironmentObject private var model: AppModel
+    /// Nel player gli avvisi compaiono sempre; nella schermata principale solo se il player non e' aperto
+    /// (sopra il player la schermata principale non puo' mostrarli).
+    let inPlayer: Bool
+    private var active: Bool { inPlayer || model.playing == nil }
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Registrazione in corso", isPresented: Binding(
+                get: { active && model.pendingPlayback != nil },
+                set: { if !$0 { model.pendingPlayback = nil } }
+            )) {
+                Button("Ferma la registrazione e guarda", role: .destructive) { model.confirmPendingPlayback() }
+                Button("Annulla", role: .cancel) { model.pendingPlayback = nil }
+            } message: {
+                Text("Stai registrando \(DVRManager.shared.recordingName). Con una sola connessione verso il provider, guardare \(model.pendingPlayback?.title ?? "questo contenuto") ferma la registrazione e la salva fin qui.")
+            }
+            .alert("Registrazione programmata", isPresented: Binding(
+                get: { active && model.pendingScheduled != nil },
+                set: { if !$0 && model.pendingScheduled != nil { model.skipScheduled() } }
+            )) {
+                Button("Registra (chiude la visione)") { model.confirmScheduled() }
+                Button("Salta questa registrazione", role: .cancel) { model.skipScheduled() }
+            } message: {
+                if let conflict = model.pendingScheduled {
+                    Text("Sta per iniziare \(conflict.item.title) su \(conflict.channel.name). Con una sola connessione non si puo' registrare mentre guardi altro.")
+                }
+            }
+            .alert("Registrazione in corso", isPresented: Binding(
+                get: { inPlayer && model.pendingChannel != nil },
+                set: { if !$0 { model.pendingChannel = nil } }
+            )) {
+                Button("Cambia canale e ferma la registrazione", role: .destructive) { model.confirmPendingChannel() }
+                Button("Annulla", role: .cancel) { model.pendingChannel = nil }
+            } message: {
+                Text("Stai registrando \(DVRManager.shared.recordingName). Aprendo \(model.pendingChannel?.name ?? "un altro canale") la registrazione si ferma e viene salvata fin qui.")
+            }
     }
 }
 

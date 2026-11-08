@@ -129,8 +129,8 @@ struct ContinueWatchingRow: View {
                     LazyHStack(spacing: 12) {
                         ForEach(entries) { entry in
                             Button {
-                                model.playing = PlayRequest(title: entry.media.displayTitle, url: entry.media.url,
-                                                            media: entry.media)
+                                model.open(PlayRequest(title: entry.media.displayTitle, url: entry.media.url,
+                                                       media: entry.media))
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     RemoteImage(url: URL(string: entry.media.cover ?? ""))
@@ -279,7 +279,7 @@ struct OnDemandView: View {
     private func open(_ item: OnDemandItem) {
         if kind == .movies, let url = item.url {
             let media = MediaRef(id: item.id, kind: "movie", title: item.title, cover: item.cover, url: url)
-            model.playing = PlayRequest(title: item.title, url: url, media: media)
+            model.open(PlayRequest(title: item.title, url: url, media: media))
         }
     }
 
@@ -467,6 +467,6 @@ struct SeriesDetailView: View {
     private func play(_ episode: OnDemandItem) {
         guard var first = request(episode), let index = episodes.firstIndex(of: episode) else { return }
         first.next = episodes.suffix(from: index + 1).prefix(30).compactMap { request($0) }
-        model.playing = first
+        model.open(first)
     }
 }

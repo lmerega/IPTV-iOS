@@ -220,6 +220,32 @@ final class PlayerController: ObservableObject {
         else if let url = currentURL { load(url, forceEngine: .vlc) }
     }
 
+    /// Pausa lunga su replay o film: dopo 15 secondi si chiude la connessione al provider (che altrimenti
+    /// resta occupata e, alla ripresa, puo' far ripetere o saltare dei pezzi) e alla ripresa si riparte
+    /// esattamente dal punto della pausa.
+    private func scheduleReleaseWhilePaused() {
+        let remote = !(currentURL?.isFileURL ?? true)
+        guard catchupProgram != nil || (!isLive && !tsActive && remote) else { return }
+        let token = generation
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self, self.isPaused, self.generation == token, !self.releasedWhilePaused else { return }
+            self.releasedWhilePaused = true
+            self.vlc.stop()
+            self.log("Pausa lunga: connessione chiusa, alla ripresa riparto da \(Self.clock(self.pausedPosition))")
+        }
+    }
+
+    private func reopenAfterPause() {
+        log("Riprendo da \(Self.clock(pausedPosition))")
+        if catchupProgram != nil {
+            seekCatchup(to: pausedPosition)
+        } else if let url = currentURL {
+            pendingSeek = pausedPosition
+            load(url, forceEngine: .vlc)
+        }
+    }
+
     /// Immagine ferma mentre VLC riceve ancora dati (decodifica bloccata dopo un salto del flusso):
     /// se per 5 secondi non viene mostrata nessuna immagine nuova, riapre dal punto del blocco.
     private func freezeCheck() {
@@ -277,10 +303,25 @@ final class PlayerController: ObservableObject {
         return "\(url.lastPathComponent)" + (keys.isEmpty ? "" : " [\(keys)]")
     }
 
+    private var pausedPosition: Double = 0
+    private var releasedWhilePaused = false
+
     func togglePause() {
         if engine == .vlc {
-            vlc.togglePause()
-            isPaused.toggle()
+            if !isPaused {
+                vlc.togglePause()
+                isPaused = true
+                pausedPosition = catchupProgram != nil ? position : currentTime
+                scheduleReleaseWhilePaused()
+            } else {
+                isPaused = false
+                if releasedWhilePaused {
+                    releasedWhilePaused = false
+                    reopenAfterPause()
+                } else {
+                    vlc.togglePause()
+                }
+            }
         } else if player.timeControlStatus == .paused {
             player.play(); isPaused = false
         } else {
@@ -548,10 +589,10 @@ final class PlayerController: ObservableObject {
         let mine = generation
         catchupProgram = program
         isLive = false
-        if tsActive {
-            tsActive = false
-            TimeshiftManager.shared.release(keepForRecording: DVRManager.shared.isBufferRecording)
-        }
+        // Una sola connessione: il replay sostituisce la diretta, il buffer si ferma.
+        if DVRManager.shared.isRecording { DVRManager.shared.stop() }
+        if tsActive { tsActive = false }
+        TimeshiftManager.shared.release(keepForRecording: false)
         streamOffset = offset
         position = offset
         isBuffering = true

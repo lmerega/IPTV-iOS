@@ -181,7 +181,7 @@ struct GlobalSearchView: View {
     private func openMovie(_ item: OnDemandItem) {
         guard let url = item.url else { return }
         let media = MediaRef(id: item.id, kind: "movie", title: item.title, cover: item.cover, url: url)
-        model.playing = PlayRequest(title: item.title, url: url, media: media)
+        model.open(PlayRequest(title: item.title, url: url, media: media))
     }
 
     private func searchOnDemand() async {

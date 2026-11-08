@@ -24,6 +24,7 @@ struct PlayerScreen: View {
     @State private var toast: String?
     @State private var resumeOffer: Double?
     @State private var liveChoice: GuideProgram?
+    @State private var pendingCatchup: GuideProgram?
     @State private var nextCountdown: Int?
     @AppStorage("videoAspect") private var aspectRaw = VideoAspect.fit.rawValue
     private var aspect: VideoAspect { VideoAspect(rawValue: aspectRaw) ?? .fit }
@@ -58,6 +59,20 @@ struct PlayerScreen: View {
         }
         .onChange(of: aspectRaw, initial: true) { controller.vlc.aspect = aspect }
         .onChange(of: controller.finished) { _, done in if done { startNextCountdown() } }
+        .modifier(ConnectionAlerts(inPlayer: true))
+        .alert("Registrazione in corso", isPresented: Binding(
+            get: { pendingCatchup != nil }, set: { if !$0 { pendingCatchup = nil } })) {
+            Button("Ferma la registrazione e guarda", role: .destructive) {
+                if let program = pendingCatchup {
+                    pendingCatchup = nil
+                    dvr.stop()
+                    startCatchup(program)
+                }
+            }
+            Button("Annulla", role: .cancel) { pendingCatchup = nil }
+        } message: {
+            Text("Con una sola connessione verso il provider, il replay ferma la registrazione e la salva fin qui.")
+        }
         .confirmationDialog(liveChoice?.title ?? "", isPresented: Binding(
             get: { liveChoice != nil }, set: { if !$0 { liveChoice = nil } }), titleVisibility: .visible) {
             if let program = liveChoice {
@@ -295,7 +310,7 @@ struct PlayerScreen: View {
         nextCountdown = nil
         next.next = Array(request.next.dropFirst())
         next.startFullscreen = fullscreen
-        model.playing = next
+        model.open(next)
     }
 
     /// Formato del video: scelta ricordata per tutti i contenuti.
@@ -489,18 +504,18 @@ struct PlayerScreen: View {
                         Menu {
                             if let end = currentProgramEnd {
                                 Button("Fino a fine programma (\(end.formatted(date: .omitted, time: .shortened)))") {
-                                    dvr.start(channel: channel, stopAt: end.addingTimeInterval(120))
+                                    startRecording(channel, stopAt: end.addingTimeInterval(120))
                                 }
                             }
                             ForEach([30, 60, 120], id: \.self) { minutes in
                                 Button(minutes < 60 ? "Per \(minutes) minuti" : "Per \(minutes / 60) h") {
-                                    dvr.start(channel: channel, stopAfterMinutes: minutes)
+                                    startRecording(channel, minutes: minutes)
                                 }
                             }
                         } label: {
                             Label("Registra", systemImage: "record.circle").lineLimit(1).minimumScaleFactor(0.8)
                         } primaryAction: {
-                            dvr.start(channel: channel)
+                            startRecording(channel)
                         }
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
@@ -565,7 +580,8 @@ struct PlayerScreen: View {
         } else if program.isLive {
             controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
         } else if model.canReplay(program, channel: channel) {
-            Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
+            if dvr.isRecording { pendingCatchup = program; _ = source }
+            else { Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) } }
         }
     }
 
@@ -610,8 +626,22 @@ struct PlayerScreen: View {
 
     /// Riparte dall'inizio del programma in onda, in differita dall'archivio del provider.
     private func startOver(_ program: GuideProgram) {
+        // Una sola connessione: durante una registrazione il replay richiede di fermarla.
+        if dvr.isRecording { pendingCatchup = program } else { startCatchup(program) }
+    }
+
+    private func startCatchup(_ program: GuideProgram) {
         guard let channel = request.channel, let source = model.current else { return }
         Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
+    }
+
+    /// Registrare mentre si guarda e' possibile solo dal buffer timeshift (stessa connessione della visione).
+    private func startRecording(_ channel: IPTVChannel, minutes: Int? = nil, stopAt: Date? = nil) {
+        guard controller.tsActive else {
+            showToast("Per registrare mentre guardi attiva il timeshift: una sola connessione")
+            return
+        }
+        dvr.start(channel: channel, stopAfterMinutes: minutes, stopAt: stopAt)
     }
 
     /// Fine del programma in onda (per il timer "a fine programma").
