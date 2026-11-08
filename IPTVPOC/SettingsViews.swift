@@ -202,10 +202,11 @@ struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(part.title)
                                     if let date = model.refreshDate(part) {
-                                        Text("aggiornati \(date.formatted(.relative(presentation: .named)))")
+                                        Text("\(part.updatedWord) \(date.formatted(.relative(presentation: .named)))")
                                             .font(.caption).foregroundStyle(.secondary)
-                                    } else if part == .guide {
-                                        Text("si aggiorna da sola ogni 3 ore").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if part == .guide {
+                                        Text("si aggiorna anche da sola ogni 3 ore").font(.caption2).foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer()

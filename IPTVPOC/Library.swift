@@ -115,12 +115,14 @@ final class DownloadProgress: ObservableObject {
         let id: String
         var received: Int64
         var expected: Int64
+        /// Conteggio di elementi (es. canali) invece che di byte.
+        var unit: String? = nil
         var fraction: Double? { expected > 0 ? min(1, Double(received) / Double(expected)) : nil }
     }
     @Published private(set) var items: [Item] = []
     private var lastUpdate: [String: Date] = [:]
 
-    func update(_ label: String, received: Int64, expected: Int64) {
+    func update(_ label: String, received: Int64, expected: Int64, unit: String? = nil) {
         // Al massimo 5 aggiornamenti al secondo per voce.
         if let last = lastUpdate[label], Date().timeIntervalSince(last) < 0.2, received < expected { return }
         lastUpdate[label] = Date()
@@ -128,7 +130,7 @@ final class DownloadProgress: ObservableObject {
             items[index].received = received
             items[index].expected = expected
         } else {
-            items.append(Item(id: label, received: received, expected: expected))
+            items.append(Item(id: label, received: received, expected: expected, unit: unit))
         }
     }
 
@@ -159,9 +161,10 @@ struct LoadingBanner: View {
                         } else {
                             ProgressView().progressViewStyle(.linear)
                         }
-                        Text(item.expected > 0
-                             ? "\(item.id): \(Self.size(item.received)) di \(Self.size(item.expected))"
-                             : "\(item.id): \(Self.size(item.received))")
+                        Text(item.unit.map { "\(item.id): \(item.received) di \(item.expected) \($0)" }
+                             ?? (item.expected > 0
+                                 ? "\(item.id): \(Self.size(item.received)) di \(Self.size(item.expected))"
+                                 : "\(item.id): \(Self.size(item.received))"))
                             .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     }
                 }

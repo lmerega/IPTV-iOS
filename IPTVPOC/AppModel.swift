@@ -52,6 +52,13 @@ final class AppModel: ObservableObject {
             case .series: return "Serie"
             }
         }
+        var updatedWord: String {
+            switch self {
+            case .live, .movies: return "aggiornati"
+            case .guide: return "aggiornata"
+            case .series: return "aggiornate"
+            }
+        }
     }
 
     func revision(for kind: OnDemandKind) -> Int {
@@ -63,7 +70,9 @@ final class AppModel: ObservableObject {
         guard let source = current else { return nil }
         switch part {
         case .live: return catalogDate
-        case .guide: return nil
+        case .guide:
+            let value = UserDefaults.standard.double(forKey: "guide.refreshed." + source.id.uuidString)
+            return value > 0 ? Date(timeIntervalSince1970: value) : nil
         case .movies: return IPTVService.cacheDate(source, action: "get_vod_streams")
         case .series: return IPTVService.cacheDate(source, action: "get_series")
         }
@@ -82,8 +91,9 @@ final class AppModel: ObservableObject {
             case .guide:
                 APICache.invalidate(group: "guide")
                 NowNextStore.shared.clear()
+                if source.kind == "m3u" { await reload() } else { await prefetchGuide(source) }
                 guideRevision += 1
-                if source.kind == "m3u" { await reload() }
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "guide.refreshed." + source.id.uuidString)
             case .movies, .series:
                 guard source.kind == "xtream" else { continue }
                 let kind: OnDemandKind = part == .movies ? .movies : .series
@@ -443,6 +453,35 @@ final class AppModel: ObservableObject {
         case .movies: hiddenMovies = set; UserDefaults.standard.set(Array(set), forKey: key("hidden.movies"))
         case .series: hiddenSeries = set; UserDefaults.standard.set(Array(set), forKey: key("hidden.series"))
         }
+    }
+
+    /// Riscarica "ora in onda / a seguire" dei canali piu' usati (preferiti, recenti, poi i primi dell'elenco),
+    /// 4 alla volta, con l'avanzamento "Guida: 12 di 80 canali". Gli altri si aggiornano quando compaiono.
+    private func prefetchGuide(_ source: IPTVSource) async {
+        var seen = Set<String>()
+        let list = (orderedFavorites + recentChannels + visibleChannels.prefix(80)).filter { seen.insert($0.id).inserted }
+        let targets = Array(list.prefix(120))
+        guard !targets.isEmpty else { return }
+        let progress = DownloadProgress.shared
+        let label = "Guida"
+        progress.update(label, received: 0, expected: Int64(targets.count), unit: "canali")
+        var done = 0
+        for batch in stride(from: 0, to: targets.count, by: 4).map({ Array(targets[$0..<min($0 + 4, targets.count)]) }) {
+            let results = await withTaskGroup(of: (String, [GuideProgram]).self) { group in
+                for channel in batch {
+                    group.addTask { (channel.id, await IPTVExtras.shortGuide(source, channel: channel, limit: 6)) }
+                }
+                var collected: [(String, [GuideProgram])] = []
+                for await item in group { collected.append(item) }
+                return collected
+            }
+            for (id, programs) in results {
+                NowNextStore.shared.set(id, Array(programs.filter { $0.end > Date() }.prefix(3)))
+            }
+            done += batch.count
+            progress.update(label, received: Int64(done), expected: Int64(targets.count), unit: "canali")
+        }
+        progress.finish(label)
     }
 
     // MARK: Film e serie in anticipo
