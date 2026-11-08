@@ -16,6 +16,8 @@ struct HelpView: View {
                   text: "L'app scarica canali, guida programmi, film e serie. La prima volta controlla anche quali formati fornisce il server: puo' servire qualche secondo."),
             Entry(title: "3. Guarda",
                   text: "Scheda Live → scegli una categoria in alto → tocca un canale. Formato, motore video e replay sono gia' su Automatico e di solito non vanno toccati."),
+            Entry(title: "Avanzamento e data della lista",
+                  text: "Durante il caricamento una striscia in alto mostra la fase e le barre dei download (canali, film, serie) con i MB ricevuti. Sotto il titolo compare da quanto tempo la lista non viene aggiornata; oltre una settimana l'avviso diventa arancione."),
             Entry(title: "Aggiornare i contenuti",
                   text: "Canali, categorie, film e serie vengono salvati sul telefono, cosi' l'app si apre subito. Quando il provider aggiunge contenuti premi il pulsante ↻ in Live, Film o Serie (o trascina in basso la lista dei film), oppure Impostazioni → Contenuti → Aggiorna. La guida programmi si aggiorna da sola ogni 3 ore."),
             Entry(title: "Hai solo un link M3U?",
@@ -141,7 +143,7 @@ struct HelpView: View {
         ]),
         ("Problemi comuni", [
             Entry(title: "Il canale non parte o resta a caricare",
-                  text: "Impostazioni → Rete → \"Verifica connessione\": controlla in ordine rete del telefono, Internet, raggiungibilita' del server e risposta del servizio IPTV."),
+                  text: "Impostazioni → Rete → \"Verifica connessione\": mostra subito tutti i controlli e li esegue in ordine (rete del telefono, Internet, nome e porta del server, servizio IPTV, velocita' di download). Arancione mentre e' in corso, verde se riesce, rosso se fallisce, grigio se viene saltato perche' uno precedente non e' riuscito."),
             Entry(title: "Il replay non trova la puntata",
                   text: "Apri il replay, tocca lo stetoscopio e poi \"Testa tutti i formati\". Se il programma parte sfasato usa la Correzione orario."),
             Entry(title: "Posso tornare indietro solo di pochi secondi",

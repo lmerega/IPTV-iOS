@@ -171,9 +171,27 @@ struct SettingsView: View {
                         Task { await network.run(source: model.current) }
                     }.disabled(network.running)
                     ForEach(network.lines) { line in
-                        Label(line.text, systemImage: line.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                            .foregroundStyle(line.ok ? Color.green : Color.red)
-                            .font(.footnote)
+                        HStack(alignment: .top, spacing: 10) {
+                            Group {
+                                switch line.state {
+                                case .waiting: Image(systemName: "circle").foregroundStyle(.secondary)
+                                case .running: ProgressView().tint(.orange)
+                                case .ok: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                case .failed: Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                                case .skipped: Image(systemName: "minus.circle").foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(width: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(line.title).font(.subheadline)
+                                    .foregroundStyle(line.state == .running ? Color.orange : Color.primary)
+                                if !line.detail.isEmpty {
+                                    Text(line.detail).font(.caption)
+                                        .foregroundStyle(line.state == .failed ? Color.red
+                                                         : line.state == .running ? Color.orange : Color.secondary)
+                                }
+                            }
+                        }
                     }
                 }
 

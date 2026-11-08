@@ -105,6 +105,97 @@ final class WatchHistory: ObservableObject {
     }
 }
 
+// MARK: - Avanzamento dei download
+
+/// Download in corso dal provider (canali, film, serie, guida), con byte ricevuti e totali.
+@MainActor
+final class DownloadProgress: ObservableObject {
+    static let shared = DownloadProgress()
+    struct Item: Identifiable {
+        let id: String
+        var received: Int64
+        var expected: Int64
+        var fraction: Double? { expected > 0 ? min(1, Double(received) / Double(expected)) : nil }
+    }
+    @Published private(set) var items: [Item] = []
+    private var lastUpdate: [String: Date] = [:]
+
+    func update(_ label: String, received: Int64, expected: Int64) {
+        // Al massimo 5 aggiornamenti al secondo per voce.
+        if let last = lastUpdate[label], Date().timeIntervalSince(last) < 0.2, received < expected { return }
+        lastUpdate[label] = Date()
+        if let index = items.firstIndex(where: { $0.id == label }) {
+            items[index].received = received
+            items[index].expected = expected
+        } else {
+            items.append(Item(id: label, received: received, expected: expected))
+        }
+    }
+
+    func finish(_ label: String) {
+        items.removeAll { $0.id == label }
+        lastUpdate[label] = nil
+    }
+}
+
+/// Striscia con le fasi del caricamento e le barre dei download in corso.
+struct LoadingBanner: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject private var downloads = DownloadProgress.shared
+
+    var body: some View {
+        if model.isLoading || model.loadingStep != nil || !downloads.items.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                if let step = model.loadingStep {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(step).font(.footnote)
+                    }
+                }
+                ForEach(downloads.items) { item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let fraction = item.fraction {
+                            ProgressView(value: fraction)
+                        } else {
+                            ProgressView().progressViewStyle(.linear)
+                        }
+                        Text(item.expected > 0
+                             ? "\(item.id): \(Self.size(item.received)) di \(Self.size(item.expected))"
+                             : "\(item.id): \(Self.size(item.received))")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal).padding(.bottom, 4)
+        }
+    }
+
+    static func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+}
+
+/// "Lista aggiornata 2 ore fa", con avviso arancione oltre una settimana.
+struct CatalogAgeLabel: View {
+    let date: Date?
+    let what: String
+
+    var body: some View {
+        if let date {
+            TimelineView(.periodic(from: .now, by: 60)) { _ in
+                let old = Date().timeIntervalSince(date) > 7 * 86400
+                Label("\(what) aggiornati \(date.formatted(.relative(presentation: .named)))",
+                      systemImage: old ? "exclamationmark.arrow.circlepath" : "clock")
+                    .font(.caption)
+                    .foregroundStyle(old ? Color.orange : Color.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
+        }
+    }
+}
+
 // MARK: - Guida breve dei canali (ora in onda / a seguire)
 
 /// Le righe dei canali ricevono la guida una alla volta: gli aggiornamenti vengono raccolti e applicati

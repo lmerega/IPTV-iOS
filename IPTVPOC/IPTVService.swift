@@ -23,17 +23,23 @@ enum IPTVService {
 
     /// Scarica `url`, usando la cache su disco secondo `cache`. Se la rete fallisce e c'e' una copia salvata,
     /// restituisce quella (cosi' l'app funziona anche con il server momentaneamente irraggiungibile).
-    static func get(_ url: URL, timeout: TimeInterval = 30, cache: CachePolicy = .none) async throws -> Data {
-        if case .none = cache { return try await fetch(url, timeout: timeout) }
+    static func get(_ url: URL, timeout: TimeInterval = 30, cache: CachePolicy = .none,
+                    progress: String? = nil) async throws -> Data {
+        if case .none = cache { return try await fetch(url, timeout: timeout, progress: progress) }
         if let hit = APICache.read(url, policy: cache) { return hit }
         do {
-            let data = try await fetch(url, timeout: timeout)
+            let data = try await fetch(url, timeout: timeout, progress: progress)
             APICache.write(url, data: data)
             return data
         } catch {
             if let stale = APICache.readStale(url) { return stale }
             throw error
         }
+    }
+
+    /// Data della copia salvata di un'azione Xtream (per "Film aggiornati …").
+    static func cacheDate(_ source: IPTVSource, action: String) -> Date? {
+        (try? apiURL(source, action: action)).flatMap(APICache.date(for:))
     }
 
     /// Data della copia salvata dei canali della sorgente (per "Aggiornato il …").
@@ -44,7 +50,32 @@ enum IPTVService {
         return url.flatMap(APICache.date(for:))
     }
 
-    private static func fetch(_ url: URL, timeout: TimeInterval) async throws -> Data {
+    /// Download con avanzamento (byte ricevuti/totali) mostrato nella striscia di caricamento.
+    private static func fetchWithProgress(_ request: URLRequest, label: String) async throws -> (Data, URLResponse) {
+        await MainActor.run { DownloadProgress.shared.update(label, received: 0, expected: 0) }
+        return try await withCheckedThrowingContinuation { continuation in
+            let box = ObservationBox()
+            let task = session.dataTask(with: request) { data, response, error in
+                box.observation?.invalidate()
+                Task { @MainActor in DownloadProgress.shared.finish(label) }
+                if let error { continuation.resume(throwing: error) }
+                else if let data, let response { continuation.resume(returning: (data, response)) }
+                else { continuation.resume(throwing: IPTVError.invalidResponse) }
+            }
+            box.observation = task.progress.observe(\.completedUnitCount) { progress, _ in
+                let received = progress.completedUnitCount
+                let expected = max(0, progress.totalUnitCount)
+                Task { @MainActor in DownloadProgress.shared.update(label, received: received, expected: expected) }
+            }
+            task.resume()
+        }
+    }
+
+    private final class ObservationBox: @unchecked Sendable {
+        var observation: NSKeyValueObservation?
+    }
+
+    private static func fetch(_ url: URL, timeout: TimeInterval, progress: String? = nil) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue("IPTVPOC/0.3", forHTTPHeaderField: "User-Agent")
@@ -52,7 +83,8 @@ enum IPTVService {
         var fetched: (Data, URLResponse)? = nil
         while fetched == nil {
             do {
-                fetched = try await session.data(for: request)
+                if let progress { fetched = try await fetchWithProgress(request, label: progress) }
+                else { fetched = try await session.data(for: request) }
             } catch let error as URLError where attempt < 2 && [.notConnectedToInternet, .networkConnectionLost,
                                                                 .cannotConnectToHost].contains(error.code) {
                 attempt += 1
@@ -121,7 +153,7 @@ enum IPTVService {
     static func loadChannels(_ source: IPTVSource) async throws -> [IPTVChannel] {
         if source.kind == "xtream" { return try await loadXtream(source) }
         let playlist = try baseURL(source.playlist)
-        let data = try await get(playlist, timeout: 90, cache: .catalog)
+        let data = try await get(playlist, timeout: 90, cache: .catalog, progress: "Playlist")
         let body = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
         let channels = parseM3U(body, base: playlist, preferHLS: source.preferHLS && source.hlsSupported != false)
         if channels.isEmpty { throw IPTVError.noChannels }
@@ -216,7 +248,8 @@ enum IPTVService {
 
     private static func loadXtream(_ source: IPTVSource) async throws -> [IPTVChannel] {
         async let names = categories(source, action: "get_live_categories")
-        let data = try await get(try apiURL(source, action: "get_live_streams"), timeout: 120, cache: .catalog)
+        let data = try await get(try apiURL(source, action: "get_live_streams"), timeout: 120, cache: .catalog,
+                                 progress: "Canali")
         let streams: [XtreamStream]
         do { streams = try JSONDecoder().decode([XtreamStream].self, from: data) }
         catch { throw IPTVError.badCredentials }

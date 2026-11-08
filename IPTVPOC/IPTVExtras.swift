@@ -54,8 +54,9 @@ enum IPTVExtras {
     // MARK: VOD e serie
 
     private static func list(_ source: IPTVSource, action: String) async throws -> [[String: Any]] {
+        let label = action == "get_vod_streams" ? "Film" : action == "get_series" ? "Serie" : "Catalogo"
         let data = try await IPTVService.get(try IPTVService.apiURL(source, action: action), timeout: 120,
-                                             cache: .catalog)
+                                             cache: .catalog, progress: label)
         guard let entries = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
             throw IPTVError.invalidResponse
         }
@@ -128,7 +129,7 @@ enum IPTVExtras {
     static func loadXMLTV(_ address: String) async -> [String: [GuideProgram]] {
         guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return [:] }
-        guard let data = try? await IPTVService.get(url, timeout: 120, cache: .maxAge(12 * 3600)),
+        guard let data = try? await IPTVService.get(url, timeout: 120, cache: .maxAge(12 * 3600), progress: "Guida XMLTV"),
               data.count < 120_000_000 else { return [:] }
         return await Task.detached(priority: .utility) { () -> [String: [GuideProgram]] in
             let xml = gunzip(data) ?? data

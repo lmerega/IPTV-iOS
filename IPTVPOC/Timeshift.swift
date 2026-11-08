@@ -34,6 +34,12 @@ final class TimeshiftBuffer: @unchecked Sendable {
     private var keyframes: [Int64] = []
     private var segments: [(offset: Int64, name: String)] = []
     private var generationValue = 0
+    /// Tabelle PAT/PMT (descrizione di programmi e tracce) con l'offset da cui valgono:
+    /// il server le manda a VLC prima dei dati, cosi' dopo un salto non deve aspettarle nel flusso.
+    private var psiHistory: [(offset: Int64, data: Data)] = []
+    private var patPacket: Data?
+    private var pmtPIDs: Set<Int> = []
+    private var pmtPackets: [Int: Data] = [:]
 
     init() {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -89,9 +95,64 @@ final class TimeshiftBuffer: @unchecked Sendable {
             carry = Data()
             carryOffset = 0
             keyframes = []
+            psiHistory = []
+            patPacket = nil
+            pmtPIDs = []
+            pmtPackets = [:]
             generationValue += 1
             condition.broadcast()
         }
+    }
+
+    /// PAT/PMT valide per i dati a partire da `offset` (vuoto se non ancora viste).
+    func psi(before offset: Int64) -> Data {
+        locked { psiHistory.last(where: { $0.offset <= offset })?.data ?? psiHistory.first?.data ?? Data() }
+    }
+
+    /// Inizio del payload di un pacchetto TS (dopo l'eventuale adaptation field), o nil.
+    private static func payloadStart(_ bytes: [UInt8], _ i: Int) -> Int? {
+        let adaptation = (bytes[i + 3] >> 4) & 0x3
+        guard adaptation == 1 || adaptation == 3 else { return nil }
+        let start = adaptation == 3 ? i + 5 + Int(bytes[i + 4]) : i + 4
+        return start < i + 188 ? start : nil
+    }
+
+    /// Legge PAT (PID 0) e PMT: conserva l'ultimo pacchetto di ciascuna e ne annota i cambiamenti.
+    private func scanPSI(_ bytes: [UInt8], _ i: Int, pid: Int, offset: Int64) {
+        guard (bytes[i + 1] & 0x40) != 0, let start = Self.payloadStart(bytes, i) else { return }
+        let packet = Data(bytes[i..<(i + 188)])
+        if pid == 0 {
+            let section = start + 1 + Int(bytes[start])
+            guard section + 8 < i + 188, bytes[section] == 0x00 else { return }
+            let length = (Int(bytes[section + 1] & 0x0f) << 8) | Int(bytes[section + 2])
+            let last = min(i + 188, section + 3 + length) - 4
+            var pids: Set<Int> = []
+            var cursor = section + 8
+            while cursor + 4 <= last {
+                let program = (Int(bytes[cursor]) << 8) | Int(bytes[cursor + 1])
+                let mapPID = (Int(bytes[cursor + 2] & 0x1f) << 8) | Int(bytes[cursor + 3])
+                if program != 0 { pids.insert(mapPID) }
+                cursor += 4
+            }
+            patPacket = packet
+            if pids != pmtPIDs { pmtPIDs = pids; pmtPackets = pmtPackets.filter { pids.contains($0.key) } }
+        } else if pmtPIDs.contains(pid) {
+            pmtPackets[pid] = packet
+        } else {
+            return
+        }
+        guard let pat = patPacket, !pmtPIDs.isEmpty, pmtPIDs.allSatisfy({ pmtPackets[$0] != nil }) else { return }
+        var table = pat
+        for key in pmtPIDs.sorted() { table.append(pmtPackets[key] ?? Data()) }
+        // Si annota solo quando le tabelle cambiano (contatori di continuita' esclusi).
+        func normalized(_ data: Data) -> Data {
+            var copy = [UInt8](data)
+            for index in stride(from: 3, to: copy.count, by: 188) { copy[index] &= 0xf0 }
+            return Data(copy)
+        }
+        if let previous = psiHistory.last, normalized(previous.data) == normalized(table) { return }
+        psiHistory.append((offset, table))
+        if psiHistory.count > 200 { psiHistory.removeFirst(psiHistory.count - 200) }
     }
 
     /// Cambia la dimensione massima senza azzerare: riducendola si cancellano subito i segmenti piu' vecchi.
@@ -119,6 +180,10 @@ final class TimeshiftBuffer: @unchecked Sendable {
         if let firstKey = keyframes.firstIndex(where: { $0 >= low }), firstKey > 0 {
             keyframes.removeFirst(firstKey)
         }
+        // Tiene l'ultima tabella valida prima del dato piu' vecchio, scarta le precedenti.
+        if let keepFrom = psiHistory.lastIndex(where: { $0.offset <= low }), keepFrom > 0 {
+            psiHistory.removeFirst(keepFrom)
+        }
     }
 
     func markSegment(_ name: String) {
@@ -129,6 +194,9 @@ final class TimeshiftBuffer: @unchecked Sendable {
             lastPCR = nil
             carry = Data()
             carryOffset = written
+            patPacket = nil
+            pmtPIDs = []
+            pmtPackets = [:]
         }
     }
 
@@ -141,6 +209,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
         while i + 188 <= bytes.count {
             guard bytes[i] == 0x47 else { i += 1; continue }
             let pid = (Int(bytes[i + 1] & 0x1f) << 8) | Int(bytes[i + 2])
+            scanPSI(bytes, i, pid: pid, offset: base + Int64(i))
             let adaptation = (bytes[i + 3] >> 4) & 0x3
             if (adaptation == 2 || adaptation == 3) && bytes[i + 4] >= 1 && (bytes[i + 5] & 0x40) != 0,
                pid == pcrPID {
@@ -484,7 +553,12 @@ final class TimeshiftServer: @unchecked Sendable {
             guard let self, error == nil, !isHead else { connection.cancel(); return }
             let generation = self.buffer.generation
             let start = self.buffer.aligned(from < 0 ? self.buffer.oldest : from)
-            self.pump(connection, offset: start, generation: generation)
+            let tables = self.buffer.psi(before: start)
+            guard !tables.isEmpty else { self.pump(connection, offset: start, generation: generation); return }
+            connection.send(content: tables, completion: .contentProcessed { [weak self] error in
+                guard let self, error == nil else { connection.cancel(); return }
+                self.pump(connection, offset: start, generation: generation)
+            })
         })
     }
 

@@ -139,7 +139,8 @@ struct LiveView: View {
                     }
                 } else if model.channels.isEmpty {
                     if model.isLoading {
-                        ProgressView("Caricamento canali…")
+                        ContentUnavailableView("Caricamento canali…", systemImage: "antenna.radiowaves.left.and.right",
+                                               description: Text("L'avanzamento e' nella striscia in alto."))
                     } else {
                         ContentUnavailableView {
                             Label("Nessun canale", systemImage: "exclamationmark.triangle")
@@ -149,6 +150,7 @@ struct LiveView: View {
                     }
                 } else {
                     VStack(spacing: 0) {
+                        CatalogAgeLabel(date: model.catalogDate, what: "Canali")
                         CategoryPicker(options: groups, selection: $group, counts: {
                             var map = model.groupCounts
                             map["Tutti"] = model.visibleChannels.count
@@ -182,6 +184,7 @@ struct LiveView: View {
             .searchable(text: $search, prompt: "Cerca un canale")
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
+                    LoadingBanner()
                     ExpiryBanner()
                     RecordingBanner()
                 }

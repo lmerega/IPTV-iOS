@@ -1,10 +1,18 @@
 import Foundation
 import Network
 
+enum DiagnosticState { case waiting, running, ok, failed, skipped }
+
 struct DiagnosticLine: Identifiable {
-    let id = UUID()
-    let ok: Bool
-    let text: String
+    let id: Int
+    let title: String
+    var detail = ""
+    var state: DiagnosticState = .waiting
+}
+
+private final class SpeedBox: @unchecked Sendable {
+    var bytes: Int64 = 0
+    var observation: NSKeyValueObservation?
 }
 
 private final class OneShot<Value>: @unchecked Sendable {
@@ -21,19 +29,34 @@ private final class OneShot<Value>: @unchecked Sendable {
     }
 }
 
-/// Diagnostica di rete in quattro passi: rete del dispositivo, Internet, server (TCP) e servizio IPTV (HTTP).
+/// Diagnostica di rete in cinque passi, mostrati tutti subito: in attesa (grigio), in corso (arancione),
+/// riuscito (verde), fallito (rosso), saltato perche' un passo precedente e' fallito (grigio).
 @MainActor
 final class NetworkDiagnostics: ObservableObject {
     @Published var lines: [DiagnosticLine] = []
     @Published var running = false
 
-    private func add(_ ok: Bool, _ text: String) { lines.append(DiagnosticLine(ok: ok, text: text)) }
+    private static let steps = ["Rete del dispositivo", "Internet", "Nome del server (DNS) e porta",
+                                "Servizio IPTV", "Velocita' di download"]
+
+    private func start(_ index: Int) { lines[index].state = .running; lines[index].detail = "In corso…" }
+    private func finish(_ index: Int, _ ok: Bool, _ detail: String) {
+        lines[index].state = ok ? .ok : .failed
+        lines[index].detail = detail
+    }
+    private func skipRemaining(from index: Int) {
+        for position in index..<lines.count where lines[position].state == .waiting {
+            lines[position].state = .skipped
+            lines[position].detail = "Saltato: un controllo precedente non e' riuscito"
+        }
+    }
 
     func run(source: IPTVSource?) async {
         running = true
-        lines = []
+        lines = Self.steps.enumerated().map { DiagnosticLine(id: $0.offset, title: $0.element) }
         defer { running = false }
 
+        start(0)
         let path = await Self.currentPath()
         var kinds: [String] = []
         if path.usesInterfaceType(.wifi) { kinds.append("Wi-Fi") }
@@ -41,42 +64,85 @@ final class NetworkDiagnostics: ObservableObject {
         if path.usesInterfaceType(.wiredEthernet) { kinds.append("cavo") }
         if path.usesInterfaceType(.other) { kinds.append("VPN/tunnel") }
         let connected = path.status == .satisfied
-        add(connected, connected ? "Rete del dispositivo attiva (\(kinds.joined(separator: ", ")))"
-                                 : "Nessuna rete attiva sul dispositivo")
-        guard connected else { return }
+        finish(0, connected, connected ? "Attiva (\(kinds.joined(separator: ", ")))" : "Nessuna rete attiva")
+        guard connected else { skipRemaining(from: 1); return }
 
+        start(1)
+        let internetStart = Date()
         let internet = await Self.checkInternet()
-        add(internet, internet ? "Internet raggiungibile" : "Internet non raggiungibile (rete locale o captive portal?)")
+        finish(1, internet, internet ? "Raggiungibile (\(Self.ms(internetStart)) ms)"
+                                     : "Non raggiungibile (rete locale o pagina di accesso Wi-Fi?)")
 
         guard let source, let address = URL(string: source.rawAddress.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = address.host else {
-            add(false, "Nessuna sorgente configurata da verificare")
+            start(2); finish(2, false, "Nessuna sorgente configurata")
+            skipRemaining(from: 3)
             return
         }
+        start(2)
         let port = address.port ?? (address.scheme == "https" ? 443 : 80)
-        let started = Date()
+        let tcpStart = Date()
         let tcp = await Self.checkTCP(host: host, port: port)
-        let tcpMs = Int(Date().timeIntervalSince(started) * 1000)
-        add(tcp, tcp ? "Server raggiungibile sulla porta \(port) (\(tcpMs) ms)"
-                     : "Server non raggiungibile sulla porta \(port): indirizzo, porta o rete")
-        guard tcp else { return }
+        finish(2, tcp, tcp ? "\(host):\(port) raggiungibile (\(Self.ms(tcpStart)) ms)"
+                           : "\(host):\(port) non raggiungibile: indirizzo, porta o rete")
+        guard tcp else { skipRemaining(from: 3); return }
 
+        start(3)
         let httpStart = Date()
         if source.kind == "xtream" {
             if let info = await IPTVService.accountInfo(source) {
-                let ms = Int(Date().timeIntervalSince(httpStart) * 1000)
                 let status = info.status.isEmpty ? "risposta ricevuta" : "account \(info.status)"
-                add(info.status.lowercased() != "expired", "Servizio IPTV: \(status) (\(ms) ms)")
+                finish(3, info.status.lowercased() != "expired", "\(status) (\(Self.ms(httpStart)) ms)")
             } else {
-                add(false, "Il server risponde ma l'API Xtream no (credenziali o servizio)")
+                finish(3, false, "Il server risponde ma l'API Xtream no (credenziali o servizio)")
             }
         } else if let url = URL(string: source.playlist) {
             var request = URLRequest(url: url)
             request.timeoutInterval = 15
             request.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
             let code = (try? await URLSession.shared.data(for: request)).flatMap { ($0.1 as? HTTPURLResponse)?.statusCode } ?? 0
-            let ms = Int(Date().timeIntervalSince(httpStart) * 1000)
-            add(code == 200 || code == 206, "Playlist: HTTP \(code) (\(ms) ms)")
+            finish(3, code == 200 || code == 206, "Playlist: HTTP \(code) (\(Self.ms(httpStart)) ms)")
+        }
+        guard lines[3].state == .ok else { skipRemaining(from: 4); return }
+
+        start(4)
+        if let speed = await Self.downloadSpeed(source) {
+            finish(4, speed >= 2, String(format: "%.1f Mbit/s", speed) + (speed < 8 ? " (basso per l'HD)" : ""))
+        } else {
+            finish(4, false, "Misura non riuscita")
+        }
+    }
+
+    private static func ms(_ start: Date) -> Int { Int(Date().timeIntervalSince(start) * 1000) }
+
+    /// Velocita' scaricando per 4 secondi un catalogo grande del provider (film o playlist).
+    nonisolated static func downloadSpeed(_ source: IPTVSource) async -> Double? {
+        let address: URL?
+        if source.kind == "xtream" { address = try? IPTVService.apiURL(source, action: "get_vod_streams") }
+        else { address = URL(string: source.playlist) }
+        guard let url = address else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Double?, Never>) in
+            let once = OneShot(continuation)
+            let box = SpeedBox()
+            let start = Date()
+            func result() -> Double? {
+                let seconds = max(0.1, Date().timeIntervalSince(start))
+                let bytes = box.bytes
+                return bytes > 0 ? Double(bytes) * 8 / seconds / 1_000_000 : nil
+            }
+            let task = URLSession.shared.dataTask(with: request) { _, _, _ in once.finish(result()) }
+            box.observation = task.progress.observe(\.completedUnitCount) { progress, _ in
+                box.bytes = progress.completedUnitCount
+            }
+            task.resume()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 4) {
+                once.finish(result())
+                task.cancel()
+                box.observation?.invalidate()
+            }
         }
     }
 

@@ -13,6 +13,8 @@ final class AppModel: ObservableObject {
     private(set) var groupCounts: [String: Int] = [:]
     private(set) var channelByID: [String: IPTVChannel] = [:]
     @Published var isLoading = false
+    /// Fase del caricamento mostrata nella striscia di avanzamento.
+    @Published var loadingStep: String?
     @Published var errorMessage: String?
     @Published var favorites: Set<String> = []
     /// Ordine dei preferiti (riordinabili nella categoria Preferiti).
@@ -113,10 +115,11 @@ final class AppModel: ObservableObject {
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
+        loadingStep = "Carico i canali…"
         errorMessage = nil
         NowNextStore.shared.clear()
         xmltv = [:]
-        defer { if generation == loadGeneration { isLoading = false } }
+        defer { if generation == loadGeneration { isLoading = false; loadingStep = nil } }
         do {
             let list = try await IPTVService.loadChannels(source)
             guard generation == loadGeneration else { return }
@@ -132,12 +135,14 @@ final class AppModel: ObservableObject {
         let wantsDetection = source.hlsSupported == nil
             && (source.streamFormat == "auto" || (source.kind == "m3u" && source.preferHLS))
         if wantsDetection, let sample = channels.first(where: { $0.altURL != nil }) {
+            loadingStep = "Controllo se il server fornisce HLS…"
             let hls = await IPTVService.supportsHLS(sample)
             guard generation == loadGeneration else { return }
             mutateCurrent { $0.hlsSupported = hls }
             if !hls { channels = IPTVService.applyFormat(channels, hls: false) }
         }
         if source.kind == "xtream" {
+            loadingStep = "Leggo lo stato dell'account…"
             if let info = await IPTVService.accountInfo(source) {
                 account = info
                 Expiry.scheduleReminders(subscription: info.expiry)
@@ -153,6 +158,7 @@ final class AppModel: ObservableObject {
         if source.kind == "xtream" { preloadOnDemand(source) }
         RecordingScheduler.shared.check()
         if source.kind == "m3u" && !epgAddress.isEmpty {
+            loadingStep = "Scarico la guida programmi…"
             let loaded = await IPTVExtras.loadXMLTV(epgAddress)
             guard generation == loadGeneration else { return }
             xmltv = loaded

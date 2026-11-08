@@ -183,6 +183,10 @@ struct OnDemandView: View {
         OnDemandStore.key(kind: kind, sourceID: model.selectedID?.uuidString ?? "", revision: model.catalogRevision)
     }
     private var hidden: Set<String> { kind == .movies ? model.hiddenMovies : model.hiddenSeries }
+    private var catalogDate: Date? {
+        guard let source = model.current else { return nil }
+        return IPTVService.cacheDate(source, action: kind == .movies ? "get_vod_streams" : "get_series")
+    }
     private var visibleCategories: [String] { catalog.categories.filter { !hidden.contains($0) } }
 
     private var filterKey: String {
@@ -192,8 +196,10 @@ struct OnDemandView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
+                LoadingBanner()
                 if query.isEmpty { ContinueWatchingRow(kind: kind == .movies ? "movie" : "episode") }
                 if !catalog.items.isEmpty {
+                    CatalogAgeLabel(date: catalogDate, what: kind == .movies ? "Film" : "Serie")
                     CategoryPicker(options: visibleCategories, selection: $category, counts: { catalog.counts })
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 12, alignment: .top)],
@@ -211,7 +217,8 @@ struct OnDemandView: View {
             .searchable(text: $search, prompt: "Cerca")
             .navigationDestination(for: OnDemandItem.self) { SeriesDetailView(series: $0) }
             .overlay {
-                if loading { ProgressView() }
+                if loading && DownloadProgress.shared.items.isEmpty { ProgressView("Preparo il catalogo…") }
+                else if loading { EmptyView() }
                 else if let failure {
                     ContentUnavailableView(failure, systemImage: "film.stack")
                 } else if catalog.items.isEmpty {
