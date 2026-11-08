@@ -81,7 +81,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
             firstSegment = 0
             Self.wipeStorage(directoryURL)
             try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-            capacityValue = max(64_000_000, capacity)
+            capacityValue = max(16_000_000, capacity)
             ready = true
             written = 0
             samples = []
@@ -158,7 +158,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
     /// Cambia la dimensione massima senza azzerare: riducendola si cancellano subito i segmenti piu' vecchi.
     func setCapacity(_ capacity: Int64) {
         locked {
-            capacityValue = max(64_000_000, capacity)
+            capacityValue = max(16_000_000, capacity)
             evictUnlocked()
         }
     }
