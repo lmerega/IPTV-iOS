@@ -119,16 +119,21 @@ final class ParserTests: XCTestCase {
         }
         XCTAssertEqual(buffer.end, 70_000_000)
         XCTAssertGreaterThan(buffer.oldest, 6_000_000)
-        let handle = try FileHandle(forReadingFrom: buffer.fileURL)
-        defer { try? handle.close() }
-        // l'ultimo blocco attraversa il punto di riavvolgimento del file
-        let last = buffer.read(handle: handle, offset: 69_000_000, max: chunkSize, timeout: 0.1)
+        // l'ultimo blocco attraversa il confine tra due segmenti
+        let last = buffer.read(offset: 69_000_000, max: chunkSize, timeout: 0.1)
         XCTAssertEqual(last.data.count, chunkSize)
         XCTAssertTrue(last.data.allSatisfy { $0 == 69 })
         XCTAssertEqual(last.next, 70_000_000)
         // un offset ormai sovrascritto viene portato al dato piu' vecchio disponibile
-        let old = buffer.read(handle: handle, offset: 0, max: 10, timeout: 0.1)
+        let old = buffer.read(offset: 0, max: 10, timeout: 0.1)
         XCTAssertEqual(old.next - Int64(old.data.count), buffer.oldest)
+        // riducendo la dimensione si cancellano i segmenti piu' vecchi senza azzerare
+        let endBefore = buffer.end
+        buffer.setCapacity(16_000_000)
+        XCTAssertEqual(buffer.end, endBefore)
+        XCTAssertLessThanOrEqual(buffer.bytesOnDisk, 16_000_000 + TimeshiftBuffer.segmentSize)
+        let tail = buffer.read(offset: 69_500_000, max: 1000, timeout: 0.1)
+        XCTAssertEqual(tail.data.count, 1000)
         buffer.reset(capacity: 64_000_000)
     }
 

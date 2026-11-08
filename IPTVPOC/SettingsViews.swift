@@ -157,12 +157,12 @@ struct SettingsView: View {
                     }
                     TimelineView(.periodic(from: .now, by: 5)) { _ in
                         VStack(spacing: 8) {
-                            LabeledContent("Nel buffer", value: "\(timeshift.bufferedMinutes) min · \(timeshift.buffer.end / 1_048_576) MB scaricati")
+                            LabeledContent("Nel buffer", value: "\(timeshift.bufferedMinutes) min · \(timeshift.buffer.bytesOnDisk / 1_048_576) MB su disco")
                             LabeledContent("Spazio libero", value: ByteCountFormatter.string(fromByteCount: timeshift.freeSpace, countStyle: .file))
                         }
                     }
                     Button("Svuota buffer", role: .destructive) { timeshift.clear() }
-                    Text("La diretta TS viene scaricata con un'unica connessione in un file circolare e riprodotta da li': pausa, ±30 s e ritorno alla diretta su tutti i canali. Il nuovo spazio vale dal prossimo svuotamento.")
+                    Text("La diretta TS viene scaricata con un'unica connessione in segmenti da 4 MB e riprodotta da li': pausa, ±30 s e ritorno alla diretta su tutti i canali. Lo spazio scelto vale subito: riducendolo si cancellano solo i minuti piu' vecchi.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 

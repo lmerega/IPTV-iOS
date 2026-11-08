@@ -2,14 +2,21 @@ import Foundation
 import Network
 import SwiftUI
 
-// MARK: - Buffer circolare su disco
+// MARK: - Buffer a segmenti su disco
 
-/// Un unico file .ts circolare: il download scrive in coda, i lettori (player, registrazioni) leggono da qualunque punto.
-/// Gli offset sono "logici" e crescono sempre; la posizione fisica nel file e' offset % capacity.
+/// Buffer del timeshift a segmenti: il download scrive in coda file da 4 MB, i lettori (player, registrazioni)
+/// leggono da qualunque punto. Gli offset sono "logici" e crescono sempre (segmento = offset / 4 MB).
+/// Per restare nella dimensione scelta si cancellano interi segmenti dal piu' vecchio: nessun dato viene
+/// sovrascritto mentre qualcuno lo sta leggendo, e la dimensione si puo' ridurre senza azzerare il buffer.
 final class TimeshiftBuffer: @unchecked Sendable {
-    let fileURL: URL
+    static let segmentSize: Int64 = 4_194_304
+    let directoryURL: URL
     private let condition = NSCondition()
     private var writeHandle: FileHandle?
+    private var writeIndex: Int64 = -1
+    /// Primo segmento ancora su disco.
+    private var firstSegment: Int64 = 0
+    private var ready = false
     private var capacityValue: Int64 = 0
     private var written: Int64 = 0
     /// Campioni (offset, tempo del contenuto in secondi). Il tempo viene dal PCR del flusso TS,
@@ -27,12 +34,25 @@ final class TimeshiftBuffer: @unchecked Sendable {
     private var keyframes: [Int64] = []
     private var segments: [(offset: Int64, name: String)] = []
     private var generationValue = 0
-    private let safetyMargin: Int64 = 4_000_000
 
     init() {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        fileURL = dir.appendingPathComponent("timeshift.ts")
+        directoryURL = dir.appendingPathComponent("Timeshift", isDirectory: true)
     }
+
+    private func segmentURL(_ index: Int64) -> URL {
+        directoryURL.appendingPathComponent("seg-\(index).ts")
+    }
+
+    /// Cancella tutti i segmenti (avvio dell'app, "Svuota buffer"). Cancella anche il vecchio file unico.
+    static func wipeStorage(_ directory: URL) {
+        try? FileManager.default.removeItem(at: directory)
+        let legacy = directory.deletingLastPathComponent().appendingPathComponent("timeshift.ts")
+        try? FileManager.default.removeItem(at: legacy)
+    }
+
+    /// Spazio occupato su disco dai segmenti.
+    var bytesOnDisk: Int64 { locked { max(0, written - firstSegment * Self.segmentSize) } }
 
     private func locked<T>(_ body: () -> T) -> T {
         condition.lock()
@@ -43,17 +63,20 @@ final class TimeshiftBuffer: @unchecked Sendable {
     var generation: Int { locked { generationValue } }
     var end: Int64 { locked { written } }
     var capacity: Int64 { locked { capacityValue } }
-    var isReady: Bool { locked { writeHandle != nil } }
-    private var oldestUnlocked: Int64 { max(0, written - capacityValue + safetyMargin) }
+    var isReady: Bool { locked { ready } }
+    private var oldestUnlocked: Int64 { firstSegment * Self.segmentSize }
     var oldest: Int64 { locked { oldestUnlocked } }
 
     func reset(capacity: Int64) {
         locked {
             try? writeHandle?.close()
-            try? FileManager.default.removeItem(at: fileURL)
-            FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-            writeHandle = try? FileHandle(forWritingTo: fileURL)
+            writeHandle = nil
+            writeIndex = -1
+            firstSegment = 0
+            Self.wipeStorage(directoryURL)
+            try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
             capacityValue = max(64_000_000, capacity)
+            ready = true
             written = 0
             samples = []
             segments = []
@@ -68,6 +91,33 @@ final class TimeshiftBuffer: @unchecked Sendable {
             keyframes = []
             generationValue += 1
             condition.broadcast()
+        }
+    }
+
+    /// Cambia la dimensione massima senza azzerare: riducendola si cancellano subito i segmenti piu' vecchi.
+    func setCapacity(_ capacity: Int64) {
+        locked {
+            capacityValue = max(64_000_000, capacity)
+            evictUnlocked()
+        }
+    }
+
+    private func evictUnlocked() {
+        guard writeIndex >= 0 else { return }
+        let keep = max(2, capacityValue / Self.segmentSize)
+        var removed = false
+        while writeIndex - firstSegment + 1 > keep {
+            try? FileManager.default.removeItem(at: segmentURL(firstSegment))
+            firstSegment += 1
+            removed = true
+        }
+        guard removed else { return }
+        let low = oldestUnlocked
+        if let firstValid = samples.firstIndex(where: { $0.offset >= low }), firstValid > 0 {
+            samples.removeFirst(firstValid)
+        }
+        if let firstKey = keyframes.firstIndex(where: { $0 >= low }), firstKey > 0 {
+            keyframes.removeFirst(firstKey)
         }
     }
 
@@ -136,14 +186,21 @@ final class TimeshiftBuffer: @unchecked Sendable {
     func append(_ data: Data) {
         condition.lock()
         defer { condition.unlock() }
-        guard let handle = writeHandle, !data.isEmpty, capacityValue > 0 else { return }
+        guard ready, !data.isEmpty, capacityValue > 0 else { return }
         var remaining = data[...]
         while !remaining.isEmpty {
-            let physical = written % capacityValue
-            let room = Int(capacityValue - physical)
+            let index = written / Self.segmentSize
+            if index != writeIndex || writeHandle == nil {
+                try? writeHandle?.close()
+                let url = segmentURL(index)
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+                writeHandle = try? FileHandle(forWritingTo: url)
+                writeIndex = index
+            }
+            guard let handle = writeHandle else { return }
+            let room = Int(Self.segmentSize - written % Self.segmentSize)
             let chunk = remaining.prefix(room)
             do {
-                try handle.seek(toOffset: UInt64(physical))
                 try handle.write(contentsOf: chunk)
             } catch {
                 return
@@ -151,6 +208,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
             written += Int64(chunk.count)
             remaining = remaining.dropFirst(chunk.count)
         }
+        evictUnlocked()
         let now = Date()
         scanPCR(data, startOffset: written - Int64(data.count))
         if now.timeIntervalSince(lastPCRWall) > 3 {
@@ -171,7 +229,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
     }
 
     /// Legge fino a `max` byte da `offset`, aspettando nuovi dati fino a `timeout`.
-    func read(handle: FileHandle, offset: Int64, max maxBytes: Int, timeout: TimeInterval) -> (data: Data, next: Int64) {
+    func read(offset: Int64, max maxBytes: Int, timeout: TimeInterval) -> (data: Data, next: Int64) {
         condition.lock()
         var start = offset
         let low = oldestUnlocked
@@ -181,25 +239,29 @@ final class TimeshiftBuffer: @unchecked Sendable {
             if !condition.wait(until: deadline) { break }
         }
         let end = min(written, start + Int64(maxBytes))
-        let capacity = capacityValue
         condition.unlock()
-        guard end > start, capacity > 0 else { return (Data(), start) }
+        guard end > start else { return (Data(), start) }
         var out = Data()
         var position = start
         while position < end {
-            let physical = position % capacity
-            let length = Int(min(end - position, capacity - physical))
-            guard (try? handle.seek(toOffset: UInt64(physical))) != nil,
+            let index = position / Self.segmentSize
+            let inner = position % Self.segmentSize
+            let length = Int(min(end - position, Self.segmentSize - inner))
+            // Un segmento cancellato nel frattempo: chi legge ripartira' dal piu' vecchio disponibile.
+            guard let handle = try? FileHandle(forReadingFrom: segmentURL(index)) else { break }
+            defer { try? handle.close() }
+            guard (try? handle.seek(toOffset: UInt64(inner))) != nil,
                   let piece = try? handle.read(upToCount: length), !piece.isEmpty else { break }
             out.append(piece)
             position += Int64(piece.count)
         }
+        if out.isEmpty && position < oldest { return (Data(), oldest) }
         return (out, position)
     }
 
     /// Allinea l'offset all'inizio di un pacchetto MPEG-TS (0x47 ogni 188 byte).
-    func aligned(_ offset: Int64, handle: FileHandle) -> Int64 {
-        let probe = read(handle: handle, offset: offset, max: 188 * 6, timeout: 3)
+    func aligned(_ offset: Int64) -> Int64 {
+        let probe = read(offset: offset, max: 188 * 6, timeout: 3)
         let bytes = [UInt8](probe.data)
         let base = probe.next - Int64(bytes.count)
         guard bytes.count >= 188 * 3 else { return base }
@@ -340,6 +402,9 @@ final class TimeshiftServer: @unchecked Sendable {
 
     init(buffer: TimeshiftBuffer) { self.buffer = buffer }
 
+    /// Codice casuale della sessione: altre app sul telefono non possono leggere il flusso dal server locale.
+    let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+
     private var requests = 0
     private var bytesSent: Int64 = 0
     private var lastFrom: Int64 = -1
@@ -400,39 +465,45 @@ final class TimeshiftServer: @unchecked Sendable {
         let firstLine = head.components(separatedBy: "\r\n").first ?? ""
         let parts = firstLine.split(separator: " ")
         var from: Int64 = -1
-        if parts.count >= 2, let components = URLComponents(string: String(parts[1])),
-           let value = components.queryItems?.first(where: { $0.name == "from" })?.value, let number = Int64(value) {
-            from = number
+        var authorized = false
+        if parts.count >= 2, let components = URLComponents(string: String(parts[1])) {
+            if let value = components.queryItems?.first(where: { $0.name == "from" })?.value, let number = Int64(value) {
+                from = number
+            }
+            authorized = components.queryItems?.first(where: { $0.name == "t" })?.value == token
+        }
+        guard authorized else {
+            let denied = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(denied.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return
         }
         lock.lock(); requests += 1; lastFrom = from; lastRequest = Date(); lock.unlock()
         let isHead = parts.first == "HEAD"
         let header = "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
-            guard let self, error == nil, !isHead, let handle = try? FileHandle(forReadingFrom: self.buffer.fileURL) else {
-                connection.cancel(); return
-            }
+            guard let self, error == nil, !isHead else { connection.cancel(); return }
             let generation = self.buffer.generation
-            let start = self.buffer.aligned(from < 0 ? self.buffer.oldest : from, handle: handle)
-            self.pump(connection, handle: handle, offset: start, generation: generation)
+            let start = self.buffer.aligned(from < 0 ? self.buffer.oldest : from)
+            self.pump(connection, offset: start, generation: generation)
         })
     }
 
-    private func pump(_ connection: NWConnection, handle: FileHandle, offset: Int64, generation: Int) {
-        if case .cancelled = connection.state { try? handle.close(); return }
-        if case .failed = connection.state { try? handle.close(); return }
-        guard buffer.generation == generation else { try? handle.close(); connection.cancel(); return }
-        let chunk = buffer.read(handle: handle, offset: offset, max: 262_144, timeout: 2)
+    private func pump(_ connection: NWConnection, offset: Int64, generation: Int) {
+        if case .cancelled = connection.state { return }
+        if case .failed = connection.state { return }
+        guard buffer.generation == generation else { connection.cancel(); return }
+        let chunk = buffer.read(offset: offset, max: 262_144, timeout: 2)
         if chunk.data.isEmpty {
             DispatchQueue.global().async { [weak self] in
-                self?.pump(connection, handle: handle, offset: chunk.next, generation: generation)
+                self?.pump(connection, offset: chunk.next, generation: generation)
             }
             return
         }
         let count = Int64(chunk.data.count)
         connection.send(content: chunk.data, completion: .contentProcessed { [weak self] error in
-            guard let self, error == nil else { try? handle.close(); connection.cancel(); return }
+            guard let self, error == nil else { connection.cancel(); return }
             self.lock.lock(); self.bytesSent += count; self.lock.unlock()
-            self.pump(connection, handle: handle, offset: chunk.next, generation: generation)
+            self.pump(connection, offset: chunk.next, generation: generation)
         })
     }
 }
@@ -465,13 +536,12 @@ final class BufferRecorder: @unchecked Sendable {
     func run(buffer: TimeshiftBuffer, from start: Int64, to output: URL, limit: Int64,
              progress: @escaping @Sendable (Int64) -> Void) -> (Int64, String) {
         guard FileManager.default.createFile(atPath: output.path, contents: nil),
-              let writer = try? FileHandle(forWritingTo: output),
-              let reader = try? FileHandle(forReadingFrom: buffer.fileURL) else {
+              let writer = try? FileHandle(forWritingTo: output) else {
             return (0, "Impossibile creare il file della registrazione.")
         }
-        defer { try? writer.close(); try? reader.close() }
+        defer { try? writer.close() }
         let generation = buffer.generation
-        var offset = buffer.aligned(start, handle: reader)
+        var offset = buffer.aligned(start)
         var written: Int64 = 0
         var lastReport = Date()
         while true {
@@ -481,7 +551,7 @@ final class BufferRecorder: @unchecked Sendable {
             if offset < buffer.oldest { return (written, "Registrazione troppo indietro: dati gia' sovrascritti.") }
             let maxBytes = stopping ? Int(max(0, min(262_144, stopAt - offset))) : 262_144
             if maxBytes == 0 { return (written, "Registrazione salvata.") }
-            let chunk = buffer.read(handle: reader, offset: offset, max: maxBytes, timeout: 1)
+            let chunk = buffer.read(offset: offset, max: maxBytes, timeout: 1)
             if chunk.data.isEmpty { offset = chunk.next; continue }
             do { try writer.write(contentsOf: chunk.data) } catch { return (written, "Errore di scrittura: spazio esaurito?") }
             written += Int64(chunk.data.count)
@@ -498,7 +568,10 @@ final class BufferRecorder: @unchecked Sendable {
 final class TimeshiftManager: ObservableObject {
     static let shared = TimeshiftManager()
     @AppStorage("timeshift.enabled") var enabled = true
-    @AppStorage("timeshift.sizeGB") var sizeGB = 4
+    @AppStorage("timeshift.sizeGB") var sizeGB = 4 {
+        // Nuova dimensione subito, senza azzerare: riducendo si cancellano i segmenti piu' vecchi.
+        didSet { if buffer.isReady { buffer.setCapacity(desiredCapacity) } }
+    }
 
     let buffer = TimeshiftBuffer()
     private let downloader: TimeshiftDownloader
@@ -519,20 +592,20 @@ final class TimeshiftManager: ObservableObject {
     private init() {
         downloader = TimeshiftDownloader(buffer: buffer)
         server = TimeshiftServer(buffer: buffer)
-        // Il buffer non sopravvive al riavvio dell'app: libera subito lo spazio del vecchio file.
-        try? FileManager.default.removeItem(at: buffer.fileURL)
+        // Il buffer non sopravvive al riavvio dell'app: libera subito lo spazio dei vecchi segmenti.
+        TimeshiftBuffer.wipeStorage(buffer.directoryURL)
     }
 
     var freeSpace: Int64 {
-        let values = try? buffer.fileURL.deletingLastPathComponent()
+        let values = try? buffer.directoryURL.deletingLastPathComponent()
             .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         return values?.volumeAvailableCapacityForImportantUsage ?? 0
     }
 
+    /// Dimensione scelta, ridotta se sul telefono resterebbe meno di 1 GB libero.
     private var desiredCapacity: Int64 {
         let wanted = Int64(sizeGB) * 1_073_741_824
-        let current = (try? buffer.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-        let available = freeSpace + current - 1_073_741_824
+        let available = freeSpace + buffer.bytesOnDisk - 1_073_741_824
         return max(256_000_000, min(wanted, available))
     }
 
@@ -561,7 +634,7 @@ final class TimeshiftManager: ObservableObject {
     }
 
     func localURL(from offset: Int64) -> URL? {
-        URL(string: "http://127.0.0.1:\(server.port)/stream?from=\(offset)&r=\(UUID().uuidString.prefix(8))")
+        URL(string: "http://127.0.0.1:\(server.port)/stream?from=\(offset)&t=\(server.token)&r=\(UUID().uuidString.prefix(8))")
     }
 
     /// Offset da cui e' partita l'ultima diretta (inizio dei dati del canale appena sintonizzato).

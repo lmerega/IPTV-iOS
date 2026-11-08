@@ -81,7 +81,7 @@ struct HelpView: View {
             Entry(title: "Cambio canale",
                   text: "Il buffer e' unico e continua a riempirsi con il nuovo canale: tornando indietro puoi ritrovare anche il canale precedente."),
             Entry(title: "Impostazioni → Timeshift",
-                  text: "\"Timeshift sulla diretta\" lo accende o spegne. \"Spazio buffer\" e' la dimensione del file (4 GB ≈ un'ora in alta definizione): quando e' pieno sovrascrive le parti piu' vecchie. Il nuovo valore vale dopo \"Svuota buffer\", che cancella il file e libera lo spazio.")
+                  text: "\"Timeshift sulla diretta\" lo accende o spegne. \"Spazio buffer\" e' lo spazio massimo (4 GB ≈ un'ora in alta definizione): quando e' pieno si cancellano le parti piu' vecchie. Cambiarlo vale subito: riducendolo si perdono solo i minuti piu' vecchi oltre la nuova dimensione. \"Svuota buffer\" cancella tutto e libera lo spazio.")
         ]),
         ("Replay (catch-up): rivedere programmi passati", [
             Entry(title: "Come si usa",

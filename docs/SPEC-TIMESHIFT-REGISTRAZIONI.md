@@ -13,15 +13,17 @@ in diretta, registrazioni senza connessioni aggiuntive e visione della registraz
 Motivo: gli account IPTV hanno poche connessioni (spesso 1 o 2). Il timeshift lato provider (catch-up)
 non sostituisce questo sistema.
 
-## 1. Buffer circolare (`TimeshiftBuffer`)
+## 1. Buffer a segmenti (`TimeshiftBuffer`)
 
-- **File:** un solo file nella cache dell'app, per esempio `timeshift.ts`. Capacità configurabile: 1, 2, 4 o 8 GB,
-  predefinita 4 GB, circa un'ora di FHD. Il nuovo valore vale dopo "Svuota buffer".
-- **Offset logici crescenti** (Int64): `written` è il totale dei byte ricevuti dall'inizio. La posizione nel file
-  si calcola come `offset % capacity`. La lettura gestisce il passaggio dalla fine all'inizio del file.
-- **Dato più vecchio leggibile:** `oldest = max(0, written - capacity + margine)`, con un margine di sicurezza di
-  qualche MB per non leggere dati che stanno per essere sovrascritti. Un offset più vecchio di `oldest` si porta a
-  `oldest`.
+- **File:** segmenti da 4 MB (`seg-<n>.ts`) in una cartella della cache dell'app. Capacità configurabile: 1, 2, 4
+  o 8 GB, predefinita 4 GB, circa un'ora di FHD. Inizialmente era un unico file circolare: i segmenti evitano di
+  sovrascrivere dati che qualcuno sta leggendo e permettono di ridurre la dimensione senza azzerare il buffer.
+- **Offset logici crescenti** (Int64): `written` è il totale dei byte ricevuti dall'inizio.
+  Segmento = `offset / 4 MB`, posizione interna = `offset % 4 MB`. La lettura passa da un segmento al successivo.
+- **Eliminazione:** si tengono `capacità / 4 MB` segmenti e si cancellano interi segmenti dal più vecchio.
+  Cambiando la capacità si applica subito: riducendola si cancellano solo i segmenti in eccesso.
+- **Dato più vecchio leggibile:** `oldest = primoSegmento × 4 MB`. Un offset più vecchio si porta a `oldest`;
+  se un segmento viene cancellato mentre lo si legge, il lettore riparte dal più vecchio disponibile.
 - **`read(offset, max, timeout)`:** se non ci sono ancora dati oltre `offset` aspetta fino a `timeout` (diretta che
   cresce), poi restituisce i dati e l'offset successivo.
 - **`aligned(offset)`:** riallinea l'offset al pacchetto TS: byte di sync 0x47 ripetuto ogni 188 byte, verificato su
@@ -79,7 +81,8 @@ immagini rovinate, soprattutto con audio AC-3.
 
 ## 5. Server HTTP locale per il player
 
-- Server in ascolto solo su 127.0.0.1, porta casuale (su iOS `NWListener`).
+- Server in ascolto solo su 127.0.0.1, porta casuale (su iOS `NWListener`), con un codice casuale di sessione
+  nell'URL (`t=`): senza codice risponde 403, così altre app non leggono il flusso.
 - `GET /stream?from=<offset>&r=<casuale>`: risponde `200`, `Content-Type: video/mp2t`, `Connection: close`, poi
   invia dal buffer a blocchi di circa 256 KB a partire da `aligned(from)`, all'infinito, aspettando i nuovi dati.
   Il parametro casuale evita che il player riusi una connessione vecchia.
@@ -96,6 +99,8 @@ immagini rovinate, soprattutto con audio AC-3.
 - **"Indietro di N s"** si calcola rispetto a `liveDate`. Il pulsante "Diretta" compare se si è indietro di più di
   10 s.
 - **Watchdog:** se 10 s dopo l'apertura il player è ancora fermo senza immagini, riaprire, al massimo 2 volte.
+- **Immagine bloccata:** se il numero di immagini mostrate (statistiche del player) non cresce per 5 s mentre
+  si riproduce, riaprire dal punto dell'ultima immagine buona, al massimo 3 volte in 2 minuti.
   Non fermare un player già fermo prima di aprire il nuovo flusso: gli eventi "stopped" in ritardo bloccano
   l'avvio.
 

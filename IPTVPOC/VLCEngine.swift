@@ -1,6 +1,21 @@
 import SwiftUI
 import UIKit
 
+/// Statistiche di VLC sul flusso in riproduzione (per riconoscere un'immagine ferma).
+struct VLCHealth {
+    let displayed: Int
+    let lost: Int
+    let decodedVideo: Int
+    let playedAudio: Int
+    let readBytes: Int
+    let corrupted: Int
+    let discontinuities: Int
+
+    var summary: String {
+        "immagini mostrate \(displayed), perse \(lost), audio \(playedAudio), letti \(readBytes / 1_048_576) MB, discontinuita' \(discontinuities), corrotti \(corrupted)"
+    }
+}
+
 #if canImport(MobileVLCKit)
 import MobileVLCKit
 
@@ -108,6 +123,15 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         if player.isPlaying { player.pause() } else { player.play() }
     }
 
+    var health: VLCHealth? {
+        guard let media = player.media else { return nil }
+        let stats = media.statistics
+        return VLCHealth(displayed: Int(stats.displayedPictures), lost: Int(stats.lostPictures),
+                         decodedVideo: Int(stats.decodedVideo), playedAudio: Int(stats.playedAudioBuffers),
+                         readBytes: Int(stats.readBytes), corrupted: Int(stats.demuxCorrupted),
+                         discontinuities: Int(stats.demuxDiscontinuity))
+    }
+
     var lengthSeconds: Double { Double(player.media?.length.intValue ?? 0) / 1000.0 }
     /// Posizione 0...1 nel file: affidabile anche quando la durata stimata da VLC e' sbagliata.
     var position: Double { Double(player.position) }
@@ -194,6 +218,7 @@ final class VLCEngine: NSObject {
     var timeSeconds: Double { 0 }
     var position: Double { 0 }
     func setPosition(_ value: Double) {}
+    var health: VLCHealth? { nil }
     func streamSummary() -> String? { nil }
     func seek(to seconds: Double) {}
     func jump(_ delta: Int32) {}

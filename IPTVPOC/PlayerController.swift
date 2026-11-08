@@ -42,6 +42,10 @@ final class PlayerController: ObservableObject {
     private var stalledTicks = 0
     private var loadDate = Date()
     private var restartCount = 0
+    private var lastDisplayed = -1
+    private var frozenTicks = 0
+    private var lastGoodTSPosition: Date?
+    private var freezeRecoveries: [Date] = []
     /// Contenuto on demand in riproduzione (per salvare il punto raggiunto).
     var media: MediaRef?
     private var lastProgressSave = Date.distantPast
@@ -141,6 +145,7 @@ final class PlayerController: ObservableObject {
         heartbeatCount += 1
         if engine == .vlc {
             watchdog()
+            freezeCheck()
             let playing = vlc.isPlaying
             if playing && isBuffering { isBuffering = false; message = nil }
             let reported = vlc.timeSeconds
@@ -213,6 +218,34 @@ final class PlayerController: ObservableObject {
         log(detail + ": riprovo (\(restartCount)/2)")
         if tsActive { goLive() }
         else if let url = currentURL { load(url, forceEngine: .vlc) }
+    }
+
+    /// Immagine ferma mentre VLC riceve ancora dati (decodifica bloccata dopo un salto del flusso):
+    /// se per 5 secondi non viene mostrata nessuna immagine nuova, riapre dal punto del blocco.
+    private func freezeCheck() {
+        guard !isPaused, !isBuffering, vlc.isPlaying, let health = vlc.health else { frozenTicks = 0; return }
+        if health.displayed != lastDisplayed {
+            lastDisplayed = health.displayed
+            frozenTicks = 0
+            if tsActive { lastGoodTSPosition = tsPosition }
+            return
+        }
+        guard health.displayed > 0 else { return } // canali solo audio
+        frozenTicks += 1
+        guard frozenTicks == 5 else { return }
+        log("Immagine ferma da 5 s: \(health.summary)")
+        freezeRecoveries = freezeRecoveries.filter { Date().timeIntervalSince($0) < 120 }
+        guard freezeRecoveries.count < 3 else { log("Troppi blocchi ravvicinati: non riprovo"); return }
+        freezeRecoveries.append(Date())
+        if tsActive {
+            log("Riapro dal punto del blocco")
+            seekTimeshift(to: lastGoodTSPosition ?? tsPosition)
+        } else if catchupProgram != nil {
+            seekCatchup(to: position)
+        } else if let url = currentURL {
+            if !isLive { pendingSeek = currentTime }
+            load(url, forceEngine: .vlc)
+        }
     }
 
     static func clock(_ seconds: Double) -> String {
@@ -416,6 +449,8 @@ final class PlayerController: ObservableObject {
         avAudioTracksInFile = 0
         stalledTicks = 0
         loadDate = Date()
+        lastDisplayed = -1
+        frozenTicks = 0
         lastStateText = ""
         if chosen == .vlc {
             player.pause()
