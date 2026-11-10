@@ -556,14 +556,23 @@ final class PlayerController: ObservableObject {
         audioTracks = []
         subtitleTracks = []
         tsActive = false
-        if live, let channel, engineFor(url) == .vlc, TimeshiftManager.shared.enabled {
+        // Timeshift: serve il flusso TS. Sui server con HLS il canale ha anche la versione .ts (altURL):
+        // con il timeshift attivo si usa quella con VLC, cosi' pausa, indietro e registrazione funzionano.
+        let tsSource: URL? = {
+            guard live, TimeshiftManager.shared.enabled, VLCEngine.isAvailable, enginePreference != "avplayer" else { return nil }
+            if url.pathExtension.lowercased() != "m3u8" { return url }
+            if let fallback, fallback.pathExtension.lowercased() != "m3u8" { return fallback }
+            if let alt = channel?.altURL, alt.pathExtension.lowercased() != "m3u8" { return alt }
+            return nil
+        }()
+        if let channel, let tsURL = tsSource {
             let mine = generation
             fallbackURL = fallback
             triedVLC = false
             isBuffering = true
             message = "Avvio timeshift…"
             Task {
-                let local = await TimeshiftManager.shared.tune(channel, url: url)
+                let local = await TimeshiftManager.shared.tune(channel, url: tsURL)
                 guard mine == generation else { return }
                 if let local {
                     let timeshift = TimeshiftManager.shared
@@ -574,6 +583,7 @@ final class PlayerController: ObservableObject {
                     load(local, forceEngine: .vlc)
                 } else {
                     log("Timeshift non disponibile: flusso diretto")
+                    triedVLC = false
                     load(url)
                 }
             }

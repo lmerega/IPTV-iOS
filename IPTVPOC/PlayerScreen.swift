@@ -638,7 +638,13 @@ struct PlayerScreen: View {
     /// Registrare mentre si guarda e' possibile solo dal buffer timeshift (stessa connessione della visione).
     private func startRecording(_ channel: IPTVChannel, minutes: Int? = nil, stopAt: Date? = nil) {
         guard controller.tsActive else {
-            showToast("Per registrare mentre guardi attiva il timeshift: una sola connessione")
+            if !TimeshiftManager.shared.enabled {
+                showToast("Per registrare mentre guardi attiva il timeshift: una sola connessione")
+            } else if model.current?.engine == "avplayer" {
+                showToast("Per registrare mentre guardi scegli il motore Automatico o VLC: con AVPlayer il timeshift non e' attivo")
+            } else {
+                showToast("Questo canale non passa dal timeshift (nessun flusso TS): non si puo' registrare mentre lo guardi")
+            }
             return
         }
         dvr.start(channel: channel, stopAfterMinutes: minutes, stopAt: stopAt)
