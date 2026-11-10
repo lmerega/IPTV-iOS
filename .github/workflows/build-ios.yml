@@ -80,3 +80,30 @@ jobs:
           UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}')
           xcodebuild test -workspace IPTVPOC.xcworkspace -scheme IPTVPOC \
             -destination "id=$UDID" -derivedDataPath "$RUNNER_TEMP/DD" CODE_SIGNING_ALLOWED=NO
+  release:
+    # IPA pubblicata come release GitHub solo se build e test sono passati.
+    needs: [ios, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: IPTVPOC-unsigned-${{ github.run_number }}
+          path: dist
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -E '^\s*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          BUILD=${{ github.run_number }}
+          NAME="IPTVPOC-${VERSION}-build${BUILD}.ipa"
+          mv dist/IPTVPOC-unsigned.ipa "dist/${NAME}"
+          SHA=$(sha256sum "dist/${NAME}" | cut -d' ' -f1)
+          NOTES=$(printf '%s\n\nIPA non firmata: installala con Sideloadly (Bundle ID io.github.lmerega.iptvpoc).\n\nSHA-256: %s\nCommit: %s' \
+            "$(git log -1 --pretty=%s)" "$SHA" "${GITHUB_SHA::7}")
+          gh release create "v${VERSION}-build${BUILD}" "dist/${NAME}" \
+            --title "${VERSION} (build ${BUILD})" --notes "$NOTES" --target "$GITHUB_SHA" --latest
