@@ -704,18 +704,7 @@ final class PlayerController: ObservableObject {
         let timeshift = TimeshiftManager.shared
         guard tsActive, let range = timeshift.buffer.dateRange else { return }
         if airPlayActive {
-            // In AirPlay si sposta AVPlayer nella playlist del buffer (stesse date del timeshift).
-            let live = timeshift.buffer.liveDate ?? Date()
-            let clamped = min(max(range.lowerBound.addingTimeInterval(2), target), live.addingTimeInterval(-8))
-            log("AirPlay: vado a \(clamped.formatted(date: .omitted, time: .standard))")
-            player.currentItem?.seek(to: clamped) { [weak self] done in
-                Task { @MainActor in
-                    guard let self, done else { return }
-                    let time = self.player.currentTime().seconds
-                    if time.isFinite { self.airPlayBase = (clamped, time) }
-                }
-            }
-            tsPosition = clamped
+            airPlaySeek(by: target.timeIntervalSince(tsPosition))
             return
         }
         let live = timeshift.buffer.liveDate ?? Date()
@@ -732,7 +721,7 @@ final class PlayerController: ObservableObject {
     func goLive() {
         let timeshift = TimeshiftManager.shared
         if airPlayActive {
-            seekTimeshift(to: (timeshift.buffer.liveDate ?? Date()).addingTimeInterval(-8))
+            airPlaySeek(by: 10_000) // fino alla fine della playlist (diretta), meno il margine
             return
         }
         let offset = timeshift.liveOffset
@@ -838,6 +827,36 @@ final class PlayerController: ObservableObject {
         }
     }
 
+    /// Salto in AirPlay relativo al tempo del player (le date della playlist non risultano affidabili
+    /// sull'Apple TV): -30 s = tempo attuale - 30, limitato alla parte disponibile della playlist.
+    private func airPlaySeek(by delta: Double) {
+        let now = player.currentTime().seconds
+        guard now.isFinite else { return }
+        var target = now + delta
+        if let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue {
+            let start = range.start.seconds, end = range.end.seconds
+            if start.isFinite && end.isFinite { target = min(max(target, start + 1), max(start + 1, end - 6)) }
+        }
+        let applied = target - now
+        let newPosition = tsPosition.addingTimeInterval(applied)
+        log("AirPlay: salto di \(Int(applied.rounded())) s (tempo \(Int(now)) -> \(Int(target)))")
+        tsPosition = newPosition
+        airPlayBase = (newPosition, target)
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// All'avvio in AirPlay: si stima la posizione dal margine rispetto alla fine della playlist (la diretta),
+    /// poi si va al punto in cui si era sul telefono.
+    private func airPlayAlign(to position: Date) {
+        let now = player.currentTime().seconds
+        guard now.isFinite, let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue,
+              range.end.seconds.isFinite else { return }
+        let live = TimeshiftManager.shared.buffer.liveDate ?? Date()
+        tsPosition = live.addingTimeInterval(-(range.end.seconds - now))
+        airPlayBase = (tsPosition, now)
+        airPlaySeek(by: position.timeIntervalSince(tsPosition))
+    }
+
     /// Ricarica la playlist sulla TV (dopo un riavvio del server) dallo stesso punto.
     private func reloadAirPlayItem(at position: Date) {
         guard let url = TimeshiftManager.shared.hlsURL() else { return }
@@ -930,7 +949,7 @@ final class PlayerController: ObservableObject {
         case .readyToPlay:
             isBuffering = false
             log("AirPlay: in riproduzione sulla TV")
-            seekTimeshift(to: position)
+            airPlayAlign(to: position)
             // A volte la TV riceve solo l'audio: se dopo 4 s il video non e' passato, si rinegozia l'AirPlay video.
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
