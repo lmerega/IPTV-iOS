@@ -294,10 +294,14 @@ final class PlayerController: ObservableObject {
         log(parts.joined(separator: ", "))
     }
 
+    /// Nome del contenuto per il log di sessione.
+    var title = ""
+
     func log(_ text: String) {
         let stamp = Date().formatted(.dateTime.hour().minute().second())
         logLines.append("\(stamp) \(text)")
         if logLines.count > 120 { logLines.removeFirst(logLines.count - 120) }
+        SessionLog.shared.add(title, text)
     }
 
     private func describe(_ url: URL) -> String {
@@ -730,6 +734,7 @@ final class PlayerController: ObservableObject {
             airPlayVerdict = StreamInfo.airPlayCompatibility(video: codecs.video, audio: codecs.audio).detail
         }
         log("AirPlay: \(airPlayVerdict ?? "")")
+        SessionLog.shared.recordAirPlay(title, airPlayVerdict ?? "")
     }
 
     /// Riparte dall'inizio della registrazione in corso (stesso buffer timeshift).

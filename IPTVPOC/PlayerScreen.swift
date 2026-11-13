@@ -587,6 +587,7 @@ struct PlayerScreen: View {
 
     private func start() async {
         controller.channel = request.channel
+        controller.title = request.channel?.name ?? request.title
         controller.knownDuration = request.knownDuration
         controller.media = request.media
         if request.startFullscreen { fullscreen = true }

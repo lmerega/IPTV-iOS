@@ -105,6 +105,29 @@ final class WatchHistory: ObservableObject {
     }
 }
 
+// MARK: - Log della sessione
+
+/// Log che copre tutta la sessione dell'app (tutti i canali e contenuti aperti), non solo il player attuale:
+/// un solo invio con il triplo tocco racconta cosa e' successo su ogni canale visto.
+@MainActor
+final class SessionLog {
+    static let shared = SessionLog()
+    private(set) var lines: [String] = []
+    /// Esito della verifica AirPlay per ogni contenuto visto (titolo -> esito), in ordine di visione.
+    private(set) var airPlay: [(title: String, verdict: String)] = []
+
+    func add(_ title: String, _ text: String) {
+        let stamp = Date().formatted(.dateTime.hour().minute().second())
+        lines.append("\(stamp) [\(title)] \(text)")
+        if lines.count > 600 { lines.removeFirst(lines.count - 600) }
+    }
+
+    func recordAirPlay(_ title: String, _ verdict: String) {
+        airPlay.removeAll { $0.title == title }
+        airPlay.append((title, verdict))
+    }
+}
+
 // MARK: - Avanzamento dei download
 
 /// Download in corso dal provider (canali, film, serie, guida), con byte ricevuti e totali.
