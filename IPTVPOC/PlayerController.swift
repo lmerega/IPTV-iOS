@@ -44,6 +44,8 @@ final class PlayerController: ObservableObject {
     /// Da dove riprendere tornando sul telefono: canale (data nel buffer) o film (secondi).
     private var transcodeOrigin: (date: Date?, seconds: Double?, url: URL?)?
     private var lastCodecs: (video: [String], audio: [String]) = ([], [])
+    /// La conversione per AirPlay non ha funzionato su questo contenuto: niente nuovi tentativi automatici.
+    private var conversionFailed = false
     @Published var audioTracks: [MediaTrack] = []
     @Published var subtitleTracks: [MediaTrack] = []
     @Published var currentAudio: Int32 = -1
@@ -243,6 +245,7 @@ final class PlayerController: ObservableObject {
     /// VLC a volte resta fermo dopo l'apertura (flusso aperto mentre il precedente si chiudeva):
     /// dopo 10 secondi senza immagini riprova, al massimo due volte.
     private func watchdog() {
+        if airPlayActive { return } // in AirPlay VLC e' fermo di proposito
         if !isBuffering { restartCount = 0; return }
         guard !isPaused, !vlc.isPlaying, Date().timeIntervalSince(loadDate) > 10, restartCount < 2 else { return }
         restartCount += 1
@@ -282,6 +285,7 @@ final class PlayerController: ObservableObject {
     /// Immagine ferma mentre VLC riceve ancora dati (decodifica bloccata dopo un salto del flusso):
     /// se per 5 secondi non viene mostrata nessuna immagine nuova, riapre dal punto del blocco.
     private func freezeCheck() {
+        if airPlayActive { frozenTicks = 0; return }
         guard !isPaused, !isBuffering, vlc.isPlaying, let health = vlc.health else { frozenTicks = 0; return }
         if health.displayed != lastDisplayed {
             lastDisplayed = health.displayed
@@ -791,7 +795,7 @@ final class PlayerController: ObservableObject {
         log("AirPlay: \(airPlayVerdict ?? "")")
         SessionLog.shared.recordAirPlay(title, airPlayVerdict ?? "")
         // Canale aperto con l'Apple TV gia' scelta: il video va subito sulla TV.
-        if externalRouteActive && !airPlayActive && engine == .vlc {
+        if externalRouteActive && !airPlayActive && engine == .vlc && !conversionFailed {
             log("AirPlay: Apple TV gia' collegata, mando il video")
             enterAirPlay()
         }
@@ -1019,6 +1023,7 @@ final class PlayerController: ObservableObject {
         message = "Converto l'audio per l'Apple TV…"
         log("AirPlay: conversione avviata (audio in AAC)")
         vlc.stop()
+        engine = .avplayer // il player del telefono resta fermo: niente controlli di VLC durante la conversione
         Task {
             _ = await TimeshiftManager.shared.server.start()
             // Attende i primi spezzoni (fino a 25 s).
@@ -1028,9 +1033,11 @@ final class PlayerController: ObservableObject {
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
             guard airPlayActive, transcodeIndex === index else { return }
+            log("AirPlay: conversione \(index.bytesScanned / 1_048_576) MB scritti, \(index.segmentCount) spezzoni")
             guard index.segmentCount > 0,
                   let url = TimeshiftManager.shared.lanURL(path: TimeshiftManager.shared.server.registerGrowing(index)) else {
-                log("AirPlay: la conversione non produce dati")
+                log("AirPlay: la conversione non produce spezzoni utilizzabili")
+                conversionFailed = true
                 airPlayNotice = "Conversione per AirPlay non riuscita: torno sul telefono"
                 exitAirPlay()
                 return

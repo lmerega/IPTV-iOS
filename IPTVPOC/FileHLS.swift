@@ -148,6 +148,33 @@ final class GrowingHLS: @unchecked Sendable {
     private var open: (offset: Int64, time: Double)?
     private var scanned: Int64 = 0
     private var finishedValue = false
+    /// PID del video H.264 (dal PMT): il muxer TS di VLC non sempre segna i fotogrammi chiave con il
+    /// random access indicator, quindi si riconoscono anche dal contenuto (SPS/IDR all'inizio del PES).
+    private var videoPID: Int?
+
+    /// Byte del file gia' scritti dalla conversione (per il log).
+    var bytesScanned: Int64 { lock.lock(); defer { lock.unlock() }; return scanned }
+
+    /// Il PES che inizia in questo pacchetto contiene SPS (7) o IDR (5): inizio di un fotogramma chiave.
+    private func startsKeyframe(_ bytes: [UInt8], _ i: Int) -> Bool {
+        let adaptation = (bytes[i + 3] >> 4) & 0x3
+        guard adaptation == 1 || adaptation == 3 else { return false }
+        var p = adaptation == 3 ? i + 5 + Int(bytes[i + 4]) : i + 4
+        guard p + 9 < i + 188, bytes[p] == 0, bytes[p + 1] == 0, bytes[p + 2] == 1 else { return false }
+        p += 9 + Int(bytes[p + 8]) // intestazione PES
+        let end = i + 188
+        while p + 3 < end {
+            if bytes[p] == 0, bytes[p + 1] == 0, bytes[p + 2] == 1 {
+                let type = bytes[p + 3] & 0x1f
+                if type == 7 || type == 5 { return true }
+                if type == 1 { return false }
+                p += 3
+            } else {
+                p += 1
+            }
+        }
+        return false
+    }
 
     init(url: URL, targetSeconds: Double = 2) {
         self.url = url
@@ -211,6 +238,18 @@ final class GrowingHLS: @unchecked Sendable {
                     pat = Data(bytes[i..<(i + 188)])
                 } else if pmtPIDs.contains(pid), pmts[pid] == nil {
                     pmts[pid] = Data(bytes[i..<(i + 188)])
+                    if bytes[section] == 0x02 {
+                        let length = (Int(bytes[section + 1] & 0x0f) << 8) | Int(bytes[section + 2])
+                        let infoLength = (Int(bytes[section + 10] & 0x0f) << 8) | Int(bytes[section + 11])
+                        var cursor = section + 12 + infoLength
+                        let last = min(i + 188, section + 3 + length) - 4
+                        while cursor + 5 <= last {
+                            let streamType = bytes[cursor]
+                            let streamPID = (Int(bytes[cursor + 1] & 0x1f) << 8) | Int(bytes[cursor + 2])
+                            if streamType == 0x1B, videoPID == nil { videoPID = streamPID }
+                            cursor += 5 + ((Int(bytes[cursor + 3] & 0x0f) << 8) | Int(bytes[cursor + 4]))
+                        }
+                    }
                     if let pat, pmtPIDs.allSatisfy({ pmts[$0] != nil }) {
                         psi = pat
                         for key in pmtPIDs.sorted() { psi.append(pmts[key] ?? Data()) }
@@ -218,8 +257,10 @@ final class GrowingHLS: @unchecked Sendable {
                 }
             }
         }
-        // Inizio di spezzone: fotogramma chiave (random access) sul PID del PCR.
-        if hasAdaptation, bytes[i + 4] >= 1, (bytes[i + 5] & 0x40) != 0, pid == pcrPID {
+        // Inizio di spezzone: fotogramma chiave (random access sul PID del PCR, oppure SPS/IDR sul PID video).
+        let randomAccess = hasAdaptation && bytes[i + 4] >= 1 && (bytes[i + 5] & 0x40) != 0 && pid == pcrPID
+        let videoKey = pid == videoPID && (bytes[i + 1] & 0x40) != 0 && startsKeyframe(bytes, i)
+        if randomAccess || videoKey {
             if let open {
                 if timeline - open.time >= targetSeconds && offset > open.offset {
                     segments.append(FileHLS.Segment(start: open.offset, end: offset, duration: timeline - open.time))
