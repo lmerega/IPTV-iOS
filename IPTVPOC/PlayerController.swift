@@ -160,6 +160,7 @@ final class PlayerController: ObservableObject {
     /// spesso non segnala l'avanzamento del tempo finche' non si mette in pausa o si salta.
     private func heartbeatTick() {
         heartbeatCount += 1
+        checkLocalServer()
         if engine == .vlc {
             watchdog()
             freezeCheck()
@@ -344,6 +345,11 @@ final class PlayerController: ObservableObject {
                 }
             }
         } else if player.timeControlStatus == .paused {
+            if airPlayActive, airPlayFile == nil, !TimeshiftManager.shared.server.isRunning {
+                isPaused = false
+                checkLocalServer()
+                return
+            }
             player.play(); isPaused = false
         } else {
             player.pause(); isPaused = true
@@ -782,6 +788,47 @@ final class PlayerController: ObservableObject {
             currentTime = seconds
         } else if engine == .vlc { vlc.seek(to: seconds) }
         else { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
+    }
+
+    // MARK: Server locale
+
+    private var serverRestarting = false
+
+    /// Il server locale puo' essere chiuso da iOS (app in background, pausa lunga in AirPlay): se serve
+    /// e non risponde, lo riapre e riaggancia VLC o l'Apple TV allo stesso punto.
+    private func checkLocalServer() {
+        guard (tsActive || airPlayActive), !serverRestarting else { return }
+        let server = TimeshiftManager.shared.server
+        guard !server.isRunning else { return }
+        serverRestarting = true
+        let oldPort = server.port
+        let position = tsPosition
+        Task {
+            let ok = await server.start()
+            serverRestarting = false
+            log(ok ? "Server locale riaperto (porta \(server.port))\(server.port == oldPort ? "" : ", porta cambiata")"
+                   : "Server locale: impossibile riaprirlo")
+            guard ok else { return }
+            if airPlayActive, airPlayFile == nil {
+                reloadAirPlayItem(at: position)
+            } else if tsActive, engine == .vlc {
+                seekTimeshift(to: position)
+            }
+        }
+    }
+
+    /// Ricarica la playlist sulla TV (dopo un riavvio del server) dallo stesso punto.
+    private func reloadAirPlayItem(at position: Date) {
+        guard let url = TimeshiftManager.shared.hlsURL() else { return }
+        log("AirPlay: ricollego la TV")
+        let item = AVPlayerItem(url: url)
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            let status = item.status
+            let text = item.error?.localizedDescription
+            Task { @MainActor in self?.airPlayItemChanged(status, text, position: position) }
+        }
+        player.replaceCurrentItem(with: item)
+        if !isPaused { player.play() }
     }
 
     // MARK: AirPlay

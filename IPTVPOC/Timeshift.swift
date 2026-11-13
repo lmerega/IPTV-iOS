@@ -616,31 +616,70 @@ final class TimeshiftServer: @unchecked Sendable {
     var diagnostics: String {
         lock.lock(); defer { lock.unlock() }
         let ago = lastRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastRequest))) s fa"
-        return "Server locale: porta \(portValue), richieste \(requests) (ultima \(ago), da \(lastFrom / 1_048_576) MB), inviati \(bytesSent / 1_048_576) MB"
+        let state = listener.map { "\($0.state)" } ?? "assente"
+        var text = "Server locale: porta \(portValue) (\(state)), richieste \(requests) (ultima \(ago), da \(lastFrom / 1_048_576) MB), inviati \(bytesSent / 1_048_576) MB, riavvii \(restarts)"
+        if !lastFailure.isEmpty { text += ", ultimo stop: \(lastFailure)" }
+        return text
+    }
+
+    private var lastPort: UInt16 = 0
+    private var restarts = 0
+    private var lastFailure = ""
+
+    /// Il server e' attivo e accetta connessioni.
+    var isRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return portValue != 0 && listener?.state == .ready
+    }
+
+    /// Quando l'app va in background iOS puo' chiudere il server: si annota e al prossimo uso si riapre,
+    /// se possibile sulla stessa porta (cosi' gli indirizzi gia' dati a VLC e all'Apple TV restano validi).
+    private func markDown(_ reason: String) {
+        lock.lock()
+        portValue = 0
+        lastFailure = "\(Date().formatted(.dateTime.hour().minute().second())) \(reason)"
+        lock.unlock()
     }
 
     func start() async -> Bool {
-        if port != 0 { return true }
+        if isRunning { return true }
+        listener?.cancel()
+        listener = nil
         // In ascolto su tutte le interfacce: il player del telefono usa 127.0.0.1, l'Apple TV (AirPlay)
         // l'indirizzo Wi-Fi del telefono. Ogni richiesta deve portare il codice di sessione.
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        guard let listener = try? NWListener(using: parameters) else { return false }
+        let previous = lastPort
+        var created: NWListener?
+        if previous != 0, let port = NWEndpoint.Port(rawValue: previous) {
+            created = try? NWListener(using: parameters, on: port)
+        }
+        if created == nil { created = try? NWListener(using: parameters) }
+        guard let listener = created else { return false }
         self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in self?.handle(connection) }
         let ready: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let gate = ResumeOnce(continuation)
-            listener.stateUpdateHandler = { state in
+            listener.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready: gate.finish(true)
-                case .failed, .cancelled: gate.finish(false)
+                case .failed(let error):
+                    gate.finish(false)
+                    self?.markDown("server chiuso: \(error.localizedDescription)")
+                case .cancelled:
+                    gate.finish(false)
+                    self?.markDown("server chiuso dal sistema")
                 default: break
                 }
             }
             listener.start(queue: DispatchQueue(label: "timeshift.listener"))
         }
         guard ready, let assigned = listener.port?.rawValue else { return false }
-        lock.lock(); portValue = assigned; lock.unlock()
+        lock.lock()
+        portValue = assigned
+        if previous != 0 { restarts += 1 }
+        lastPort = assigned
+        lock.unlock()
         return true
     }
 
