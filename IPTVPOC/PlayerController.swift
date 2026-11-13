@@ -178,6 +178,7 @@ final class PlayerController: ObservableObject {
     private func heartbeatTick() {
         heartbeatCount += 1
         checkLocalServer()
+        checkAirPlayStall()
         if engine == .vlc {
             watchdog()
             freezeCheck()
@@ -844,6 +845,26 @@ final class PlayerController: ObservableObject {
         }
     }
 
+    private var airPlayWaitingTicks = 0
+
+    /// La TV resta in attesa di dati: si annota il motivo e gli errori riportati dal player di Apple.
+    private func checkAirPlayStall() {
+        guard airPlayActive, !isPaused, player.timeControlStatus == .waitingToPlayAtSpecifiedRate else {
+            airPlayWaitingTicks = 0
+            return
+        }
+        airPlayWaitingTicks += 1
+        guard airPlayWaitingTicks == 5 || airPlayWaitingTicks % 30 == 0 else { return }
+        let reason = player.reasonForWaitingToPlay?.rawValue ?? "sconosciuto"
+        let errors = (player.currentItem?.errorLog()?.events ?? []).suffix(3).map { event in
+            let uri = (event.uri ?? "").components(separatedBy: "?").first ?? ""
+            return "\(event.errorStatusCode) \(event.errorComment ?? "") \((uri as NSString).lastPathComponent)"
+        }
+        let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue
+        let span = range.map { "\(Int($0.start.seconds))-\(Int($0.end.seconds)) s" } ?? "-"
+        log("AirPlay: TV in attesa da \(airPlayWaitingTicks) s (motivo \(reason), tempo \(Int(player.currentTime().seconds)) s, disponibile \(span)); errori: \(errors.isEmpty ? "nessuno" : errors.joined(separator: " | "))")
+    }
+
     /// Salto in AirPlay relativo al tempo del player (le date della playlist non risultano affidabili
     /// sull'Apple TV): -30 s = tempo attuale - 30, limitato alla parte disponibile della playlist.
     private func airPlaySeek(by delta: Double) {
@@ -852,7 +873,9 @@ final class PlayerController: ObservableObject {
         var target = now + delta
         if let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue {
             let start = range.start.seconds, end = range.end.seconds
-            if start.isFinite && end.isFinite { target = min(max(target, start + 1), max(start + 1, end - 6)) }
+            // Margine di 4 s dall'inizio: i primi spezzoni di una conversione possono non essere riproducibili.
+            let margin = transcodeOrigin != nil ? 4.0 : 1.0
+            if start.isFinite && end.isFinite { target = min(max(target, start + margin), max(start + margin, end - 6)) }
         }
         let applied = target - now
         let newPosition = tsPosition.addingTimeInterval(applied)
