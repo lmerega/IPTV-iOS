@@ -53,7 +53,7 @@ final class TimeshiftBuffer: @unchecked Sendable {
         let discontinuity: Bool
     }
     /// Durata minima di uno spezzone: si taglia al primo fotogramma chiave dopo questi secondi.
-    static let hlsTargetSeconds = 4.0
+    static let hlsTargetSeconds = 2.0
     private var hlsSegments: [HLSSegment] = []
     private var hlsOpen: (start: Int64, time: Double, discontinuity: Bool)?
     private var hlsNextSequence = 0

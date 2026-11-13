@@ -23,6 +23,9 @@ final class PlayerController: ObservableObject {
     @Published var airPlayVerdict: String?
     /// Video in AirPlay: AVPlayer legge la playlist HLS dal telefono e la manda all'Apple TV.
     @Published var airPlayActive = false
+    /// Posizione in AirPlay: data del punto raggiunto con l'ultimo salto + tempo trascorso nel player.
+    /// (La data del player calcolata dalla playlist risultava sfasata di circa un minuto.)
+    private var airPlayBase: (date: Date, time: Double)?
     /// Avviso da mostrare (es. canale non compatibile con AirPlay video).
     @Published var airPlayNotice: String?
     private var routeObserver: NSObjectProtocol?
@@ -361,8 +364,10 @@ final class PlayerController: ObservableObject {
         currentTime = seconds
         if tsActive {
             let timeshift = TimeshiftManager.shared
-            if airPlayActive, let date = player.currentItem?.currentDate() {
-                tsPosition = date
+            if airPlayActive, let base = airPlayBase {
+                tsPosition = base.date.addingTimeInterval(max(0, seconds - base.time))
+            } else if airPlayActive {
+                // In attesa del primo salto la posizione resta quella di partenza.
             } else {
                 tsPosition = tsStartDate.addingTimeInterval(seconds)
             }
@@ -699,7 +704,14 @@ final class PlayerController: ObservableObject {
             let live = timeshift.buffer.liveDate ?? Date()
             let clamped = min(max(range.lowerBound.addingTimeInterval(2), target), live.addingTimeInterval(-8))
             log("AirPlay: vado a \(clamped.formatted(date: .omitted, time: .standard))")
-            player.currentItem?.seek(to: clamped, completionHandler: nil)
+            player.currentItem?.seek(to: clamped) { [weak self] done in
+                Task { @MainActor in
+                    guard let self, done else { return }
+                    let time = self.player.currentTime().seconds
+                    if time.isFinite { self.airPlayBase = (clamped, time) }
+                }
+            }
+            tsPosition = clamped
             return
         }
         let live = timeshift.buffer.liveDate ?? Date()
@@ -901,6 +913,17 @@ final class PlayerController: ObservableObject {
             isBuffering = false
             log("AirPlay: in riproduzione sulla TV")
             seekTimeshift(to: position)
+            // A volte la TV riceve solo l'audio: se dopo 4 s il video non e' passato, si rinegozia l'AirPlay video.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard let self, self.airPlayActive, !self.player.isExternalPlaybackActive else { return }
+                self.log("AirPlay: sulla TV arriva solo l'audio, riattivo il video")
+                self.player.allowsExternalPlayback = false
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                self.player.allowsExternalPlayback = true
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self.log("AirPlay: video sulla TV \(self.player.isExternalPlaybackActive ? "attivo" : "ancora non attivo")")
+            }
         case .failed:
             log("AirPlay: errore \(text ?? "")")
             airPlayNotice = "AirPlay non riuscito: torno sul telefono"
@@ -961,6 +984,7 @@ final class PlayerController: ObservableObject {
 
     func exitAirPlay() {
         guard airPlayActive else { return }
+        airPlayBase = nil
         if let file = airPlayFile {
             let seconds = player.currentTime().seconds
             airPlayActive = false
