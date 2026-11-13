@@ -30,6 +30,31 @@ enum StreamInfo {
         }
     }
 
+    /// Il flusso si puo' mandare in AirPlay come HLS con spezzoni TS (piano AirPlay)?
+    /// Video: H.264 (HEVC dentro TS non e' accettato da Apple). Audio: AAC, AC-3 o E-AC-3, almeno una traccia.
+    static func airPlayCompatibility(video: [String], audio: [String]) -> (ok: Bool, detail: String) {
+        let goodVideo: Set<String> = ["H.264"]
+        let goodAudio: Set<String> = ["AAC", "AC-3", "E-AC-3"]
+        var problems: [String] = []
+        if let codec = video.first(where: { !goodVideo.contains($0) }) {
+            problems.append(codec == "HEVC" ? "video HEVC (in TS non accettato)" : "video \(codec)")
+        }
+        let usable = audio.filter { goodAudio.contains($0) }
+        if !audio.isEmpty && usable.isEmpty {
+            let names = Set(audio.map { $0 == "MPEG audio" ? "MPEG audio (MP2)" : $0 }).sorted().joined(separator: ", ")
+            problems.append("audio \(names)")
+        }
+        let summary = (video + audio).joined(separator: " + ")
+        if problems.isEmpty {
+            var detail = "compatibile (\(summary))"
+            if let first = audio.first, !goodAudio.contains(first), let alternative = usable.first {
+                detail += ", userebbe la traccia \(alternative)"
+            }
+            return (true, detail)
+        }
+        return (false, "non compatibile: " + problems.joined(separator: ", ") + " (\(summary))")
+    }
+
     static func audioLabel(codec: String, channels: Int, rate: Int) -> String {
         let layout: String
         switch channels {

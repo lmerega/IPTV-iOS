@@ -230,6 +230,19 @@ final class ParserTests: XCTestCase {
         XCTAssertTrue(history.watched.contains("movie-test"))
     }
 
+    func testAirPlayCompatibility() {
+        XCTAssertTrue(StreamInfo.airPlayCompatibility(video: ["H.264"], audio: ["AAC"]).ok)
+        XCTAssertTrue(StreamInfo.airPlayCompatibility(video: ["H.264"], audio: ["AC-3"]).ok)
+        let alt = StreamInfo.airPlayCompatibility(video: ["H.264"], audio: ["MPEG audio", "AC-3"])
+        XCTAssertTrue(alt.ok)
+        XCTAssertTrue(alt.detail.contains("AC-3"))
+        let mp2 = StreamInfo.airPlayCompatibility(video: ["H.264"], audio: ["MPEG audio"])
+        XCTAssertFalse(mp2.ok)
+        XCTAssertTrue(mp2.detail.contains("MP2"))
+        XCTAssertFalse(StreamInfo.airPlayCompatibility(video: ["HEVC"], audio: ["AAC"]).ok)
+        XCTAssertFalse(StreamInfo.airPlayCompatibility(video: ["MPEG-2"], audio: ["MPEG audio"]).ok)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

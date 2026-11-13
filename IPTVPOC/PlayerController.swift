@@ -19,6 +19,8 @@ final class PlayerController: ObservableObject {
     @Published var duration: Double = 0
     @Published var currentTime: Double = 0
     @Published var streamInfo: String?
+    /// Esito della verifica AirPlay per il flusso in riproduzione (fase 0 del piano AirPlay).
+    @Published var airPlayVerdict: String?
     @Published var audioTracks: [MediaTrack] = []
     @Published var subtitleTracks: [MediaTrack] = []
     @Published var currentAudio: Int32 = -1
@@ -342,6 +344,7 @@ final class PlayerController: ObservableObject {
             lastInfoUpdate = Date()
             streamInfo = engine == .vlc ? vlc.streamSummary() : avPlayerSummary()
             refreshTracks()
+            checkAirPlay()
         }
         if media != nil { saveProgress() }
         if engine == .vlc, let known = knownDuration, known > 0, !tsActive, catchupProgram == nil {
@@ -488,6 +491,7 @@ final class PlayerController: ObservableObject {
         avTextGroup = nil
         avManualAudio = []
         avAudioTracksInFile = 0
+        airPlayVerdict = nil
         stalledTicks = 0
         loadDate = Date()
         lastDisplayed = -1
@@ -713,6 +717,19 @@ final class PlayerController: ObservableObject {
         let bitrate = item.accessLog()?.events.last?.indicatedBitrate ?? 0
         return StreamInfo.summary(width: Int(size.width), height: Int(size.height), fps: fps,
                                   videoCodec: "", audio: "", bitrate: bitrate)
+    }
+
+    /// Una volta per flusso: annota nel log se il contenuto potrebbe andare in AirPlay.
+    private func checkAirPlay() {
+        guard airPlayVerdict == nil, !isBuffering else { return }
+        if engine == .avplayer {
+            airPlayVerdict = "compatibile (gia' riprodotto da AVPlayer)"
+        } else {
+            let codecs = vlc.trackCodecs()
+            guard !codecs.video.isEmpty || !codecs.audio.isEmpty else { return }
+            airPlayVerdict = StreamInfo.airPlayCompatibility(video: codecs.video, audio: codecs.audio).detail
+        }
+        log("AirPlay: \(airPlayVerdict ?? "")")
     }
 
     /// Riparte dall'inizio della registrazione in corso (stesso buffer timeshift).

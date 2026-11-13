@@ -165,6 +165,20 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         return StreamInfo.summary(width: width, height: height, fps: fps, videoCodec: videoCodec, audio: audio, bitrate: 0)
     }
 
+    /// Codec di tutte le tracce video e audio del flusso (nomi leggibili).
+    func trackCodecs() -> (video: [String], audio: [String]) {
+        var video: [String] = []
+        var audio: [String] = []
+        for case let info as [String: Any] in (player.media?.tracksInformation ?? []) {
+            let codec = StreamInfo.codecName(info[VLCMediaTracksInformationCodec])
+            guard !codec.isEmpty else { continue }
+            let type = info[VLCMediaTracksInformationType] as? String
+            if type == VLCMediaTracksInformationTypeVideo { video.append(codec) }
+            else if type == VLCMediaTracksInformationTypeAudio { audio.append(codec) }
+        }
+        return (video, audio)
+    }
+
     func seek(to seconds: Double) {
         player.time = VLCTime(int: Int32(max(0, seconds) * 1000))
     }
@@ -220,6 +234,7 @@ final class VLCEngine: NSObject {
     func setPosition(_ value: Double) {}
     var health: VLCHealth? { nil }
     func streamSummary() -> String? { nil }
+    func trackCodecs() -> (video: [String], audio: [String]) { ([], []) }
     func seek(to seconds: Double) {}
     func jump(_ delta: Int32) {}
     var aspect: VideoAspect = .fit
