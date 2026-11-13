@@ -129,7 +129,7 @@ final class SessionLog {
 
     /// Righe degli altri player (canali e contenuti aperti prima di quello attuale, anche se e' lo stesso canale).
     func lines(excluding owner: UUID) -> [String] {
-        zip(lines, owners).filter { $0.1 != owner }.map(\.0)
+        zip(lines, owners).filter { $0.1 != owner }.map { $0.0 }
     }
 
     func recordAirPlay(_ title: String, _ verdict: String) {
