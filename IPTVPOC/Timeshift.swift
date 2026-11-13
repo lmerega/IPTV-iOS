@@ -400,6 +400,22 @@ final class TimeshiftDownloader: NSObject, URLSessionDataDelegate, @unchecked Se
     private var task: URLSessionDataTask?
     private var currentURL: URL?
     private var wanted = false
+    private var accepted = false
+    private var startedAt = Date()
+    private var failures = 0
+    private let eventLock = NSLock()
+    private var eventList: [String] = []
+
+    /// Ultimi eventi del download dal provider (per il log di diagnostica).
+    var events: [String] { eventLock.lock(); defer { eventLock.unlock() }; return eventList }
+
+    private func note(_ text: String) {
+        let stamp = Date().formatted(.dateTime.hour().minute().second())
+        eventLock.lock()
+        eventList.append("\(stamp) \(text)")
+        if eventList.count > 25 { eventList.removeFirst(eventList.count - 25) }
+        eventLock.unlock()
+    }
 
     init(buffer: TimeshiftBuffer) {
         self.buffer = buffer
@@ -420,6 +436,8 @@ final class TimeshiftDownloader: NSObject, URLSessionDataDelegate, @unchecked Se
             self.task?.cancel()
             self.task = nil
             self.currentURL = url
+            self.failures = 0
+            self.note("Provider: apro \(url.lastPathComponent)")
             self.connect()
         }
     }
@@ -439,11 +457,33 @@ final class TimeshiftDownloader: NSObject, URLSessionDataDelegate, @unchecked Se
         request.timeoutInterval = 30
         let next = session.dataTask(with: request)
         task = next
+        accepted = false
+        startedAt = Date()
         next.resume()
     }
 
+    /// Solo una risposta 200/206 con un flusso viene scritta nel buffer: una pagina d'errore del provider
+    /// (troppe connessioni, account scaduto) non deve finire tra i dati video.
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        guard dataTask === task else { completionHandler(.cancel); return }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        if code == 200 || code == 206 {
+            accepted = true
+            failures = 0
+            note("Provider: HTTP \(code) in \(ms) ms")
+            completionHandler(.allow)
+        } else {
+            let hint = code == 403 || code == 509 || code == 429 || code == 458
+                ? " (troppe connessioni o accesso negato?)" : code == 404 ? " (canale non trovato)" : ""
+            note("Provider: HTTP \(code) in \(ms) ms\(hint)")
+            completionHandler(.cancel)
+        }
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard dataTask === task else { return }
+        guard dataTask === task, accepted else { return }
         buffer.append(data)
     }
 
@@ -451,7 +491,15 @@ final class TimeshiftDownloader: NSObject, URLSessionDataDelegate, @unchecked Se
         guard finished === task else { return }
         task = nil
         guard wanted else { return }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+        failures += 1
+        if let error = error as? URLError, error.code != .cancelled {
+            note("Provider: connessione persa (\(error.code.rawValue)), riprovo")
+        } else if error == nil {
+            note("Provider: flusso chiuso dal server, riprovo")
+        }
+        // Attesa crescente: 2, 4, 8, fino a 30 secondi, per non insistere su un provider che rifiuta.
+        let delay = min(30, 2 * pow(2, Double(min(failures, 5) - 1)))
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.queue.addOperation {
                 guard let self, self.wanted, self.task == nil else { return }
                 self.connect()
@@ -697,11 +745,17 @@ final class TimeshiftManager: ObservableObject {
         downloader.start(url)
         downloading = true
         playerAttached = true
-        for _ in 0..<50 {
+        for _ in 0..<75 {
             if buffer.end - liveStart > 188 * 2000 { break }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        guard buffer.end > liveStart else { return nil }
+        guard buffer.end > liveStart else {
+            // Nessun dato in 15 s: si chiude il download, cosi' l'eventuale riproduzione diretta
+            // non apre una seconda connessione verso il provider.
+            downloader.stop()
+            downloading = false
+            return nil
+        }
         lastTuneOffset = liveStart
         if let firstKey = buffer.firstKeyframe(after: liveStart, within: 4_000_000) { lastTuneOffset = firstKey }
         return localURL(from: lastTuneOffset)
@@ -736,6 +790,9 @@ final class TimeshiftManager: ObservableObject {
         channelName = ""
         buffer.reset(capacity: desiredCapacity)
     }
+
+    /// Ultimi eventi del download dal provider.
+    var downloadEvents: [String] { downloader.events }
 
     var bufferedMinutes: Int {
         guard let range = buffer.dateRange else { return 0 }

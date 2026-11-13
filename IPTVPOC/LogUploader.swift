@@ -56,6 +56,11 @@ enum LogUploader {
         }
         if let message = controller.message { lines.append("Messaggio: \(message)") }
         for result in controller.probeResults { lines.append("Test \(result.variant.rawValue): \(result.detail)") }
+        let events = timeshift.downloadEvents
+        if !events.isEmpty {
+            lines.append("--- download dal provider ---")
+            lines.append(contentsOf: events)
+        }
         lines.append("--- log ---")
         lines.append(contentsOf: controller.logLines)
         return lines.joined(separator: "\n")
