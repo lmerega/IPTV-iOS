@@ -98,7 +98,9 @@ struct PlayerScreen: View {
         ZStack {
             Color.black
             if controller.engine == .vlc { VLCSurface(view: controller.vlc.view).clipped() }
-            else { AVPlayerSurface(player: controller.player, aspect: aspect) }
+            // In AirPlay si usano solo i comandi dell'app (pausa, ±30 s, barra, Diretta): quelli di sistema
+            // (±10 s) saltano con un altro meccanismo e possono bloccare la TV.
+            else { AVPlayerSurface(player: controller.player, aspect: aspect, showsControls: !controller.airPlayActive) }
             if controller.isBuffering && !controller.isPaused {
                 VStack(spacing: 8) {
                     ProgressView().tint(.white)
@@ -120,7 +122,7 @@ struct PlayerScreen: View {
                 .foregroundStyle(.white)
                 .allowsHitTesting(false)
             }
-            if controller.engine == .vlc && !fullscreen {
+            if (controller.engine == .vlc || controller.airPlayActive) && !fullscreen {
                 Color.clear.contentShape(Rectangle()).onTapGesture { showOverlay(!overlayVisible) }
                     .gesture(zapGesture)
             }
@@ -753,6 +755,7 @@ struct CatchupDiagnosticsView: View {
 struct AVPlayerSurface: UIViewControllerRepresentable {
     let player: AVPlayer
     let aspect: VideoAspect
+    var showsControls = true
 
     /// AVPlayer non puo' forzare 16:9/4:3: quei formati restano "adatta".
     private var gravity: AVLayerVideoGravity {
@@ -768,12 +771,14 @@ struct AVPlayerSurface: UIViewControllerRepresentable {
         controller.player = player
         controller.allowsPictureInPicturePlayback = false
         controller.videoGravity = gravity
+        controller.showsPlaybackControls = showsControls
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
         controller.videoGravity = gravity
+        if controller.showsPlaybackControls != showsControls { controller.showsPlaybackControls = showsControls }
     }
 }
 
