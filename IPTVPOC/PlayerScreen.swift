@@ -59,6 +59,9 @@ struct PlayerScreen: View {
         }
         .onChange(of: aspectRaw, initial: true) { controller.vlc.aspect = aspect }
         .onChange(of: controller.finished) { _, done in if done { startNextCountdown() } }
+        .onChange(of: controller.airPlayNotice) { _, notice in
+            if let notice { showToast(notice); controller.airPlayNotice = nil }
+        }
         .modifier(ConnectionAlerts(inPlayer: true))
         .alert("Registrazione in corso", isPresented: Binding(
             get: { pendingCatchup != nil }, set: { if !$0 { pendingCatchup = nil } })) {
@@ -108,6 +111,14 @@ struct PlayerScreen: View {
             }
             if controller.isPaused {
                 Image(systemName: "pause.circle.fill").font(.system(size: 54)).foregroundStyle(.white.opacity(0.85))
+            }
+            if controller.airPlayActive {
+                VStack(spacing: 8) {
+                    Image(systemName: "airplayvideo").font(.system(size: 44))
+                    Text("In riproduzione sulla Apple TV").font(.footnote)
+                }
+                .foregroundStyle(.white)
+                .allowsHitTesting(false)
             }
             if controller.engine == .vlc && !fullscreen {
                 Color.clear.contentShape(Rectangle()).onTapGesture { showOverlay(!overlayVisible) }
@@ -218,6 +229,7 @@ struct PlayerScreen: View {
                     HStack {
                         Text(request.title).font(.headline).lineLimit(1)
                         Spacer()
+                        AirPlayButton(tint: .white).frame(width: 32, height: 32).padding(.trailing, 12)
                         aspectMenu.font(.title3).padding(.trailing, 18)
                         Button { setFullscreen(false) } label: {
                             Image(systemName: "arrow.down.right.and.arrow.up.left").font(.title3)
@@ -472,6 +484,7 @@ struct PlayerScreen: View {
                 skipButton(-30, "gobackward.30")
                 skipButton(30, "goforward.30")
                 Spacer(minLength: 8)
+                AirPlayButton().frame(width: 30, height: 30)
                 aspectMenu.font(.title3)
                 tracksMenu.font(.title3)
                 Button { diagnosticsTapped() } label: { Image(systemName: "stethoscope").font(.title3) }
@@ -761,5 +774,22 @@ struct AVPlayerSurface: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
         controller.videoGravity = gravity
+    }
+}
+
+/// Pulsante AirPlay di sistema: sceglie l'Apple TV. Il passaggio del video lo gestisce PlayerController.
+struct AirPlayButton: UIViewRepresentable {
+    var tint: UIColor = .tintColor
+
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.prioritizesVideoDevices = true
+        picker.tintColor = tint
+        picker.activeTintColor = .systemBlue
+        return picker
+    }
+
+    func updateUIView(_ picker: AVRoutePickerView, context: Context) {
+        picker.tintColor = tint
     }
 }

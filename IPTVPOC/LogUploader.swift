@@ -48,7 +48,10 @@ enum LogUploader {
         if let info = controller.streamInfo { lines.append("Flusso: \(info)") }
         if let verdict = controller.airPlayVerdict { lines.append("AirPlay: \(verdict)") }
         lines.append(DVRManager.shared.diagnostics)
-        if timeshift.enabled { lines.append(timeshift.server.diagnostics) }
+        if timeshift.enabled {
+            lines.append(timeshift.server.diagnostics)
+            lines.append(timeshift.server.hlsDiagnostics)
+        }
         if controller.engine == .vlc, let health = controller.vlc.health { lines.append("VLC: \(health.summary)") }
         if let url = controller.currentURL, url.isFileURL {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0

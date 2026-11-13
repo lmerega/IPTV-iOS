@@ -41,6 +41,71 @@ final class TimeshiftBuffer: @unchecked Sendable {
     private var pmtPIDs: Set<Int> = []
     private var pmtPackets: [Int: Data] = [:]
 
+    // MARK: Spezzoni HLS (AirPlay)
+
+    /// Spezzone HLS: intervallo di byte che inizia su un fotogramma chiave, con la sua durata (orologio PCR).
+    struct HLSSegment {
+        let sequence: Int
+        let start: Int64
+        let end: Int64
+        let time: Double
+        let duration: Double
+        let discontinuity: Bool
+    }
+    /// Durata minima di uno spezzone: si taglia al primo fotogramma chiave dopo questi secondi.
+    static let hlsTargetSeconds = 4.0
+    private var hlsSegments: [HLSSegment] = []
+    private var hlsOpen: (start: Int64, time: Double, discontinuity: Bool)?
+    private var hlsNextSequence = 0
+    private var hlsDroppedDiscontinuities = 0
+    private var hlsPendingDiscontinuity = false
+
+    private func hlsKeyframe(at offset: Int64) {
+        guard let open = hlsOpen else {
+            hlsOpen = (offset, timeline, hlsPendingDiscontinuity)
+            hlsPendingDiscontinuity = false
+            return
+        }
+        let duration = timeline - open.time
+        guard duration >= Self.hlsTargetSeconds, offset > open.start else { return }
+        hlsSegments.append(HLSSegment(sequence: hlsNextSequence, start: open.start, end: offset,
+                                      time: open.time, duration: duration, discontinuity: open.discontinuity))
+        hlsNextSequence += 1
+        hlsOpen = (offset, timeline, false)
+    }
+
+    /// Playlist HLS "live" con tutto il buffer: AVPlayer (e l'Apple TV) possono tornare indietro fino al dato
+    /// piu' vecchio. Le date (PROGRAM-DATE-TIME) sono le stesse del timeshift, cosi' le posizioni coincidono.
+    func hlsPlaylist(token: String) -> String {
+        locked {
+            guard !hlsSegments.isEmpty else { return "" }
+            let target = Int((hlsSegments.map(\.duration).max() ?? 6).rounded(.up))
+            var lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:\(target)",
+                         "#EXT-X-MEDIA-SEQUENCE:\(hlsSegments[0].sequence)",
+                         "#EXT-X-DISCONTINUITY-SEQUENCE:\(hlsDroppedDiscontinuities)"]
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            for segment in hlsSegments {
+                if segment.discontinuity { lines.append("#EXT-X-DISCONTINUITY") }
+                lines.append("#EXT-X-PROGRAM-DATE-TIME:" + formatter.string(from: anchor.addingTimeInterval(segment.time)))
+                lines.append(String(format: "#EXTINF:%.3f,", segment.duration))
+                lines.append("seg-\(segment.sequence).ts?t=\(token)")
+            }
+            return lines.joined(separator: "\n") + "\n"
+        }
+    }
+
+    /// Byte di uno spezzone, se e' ancora nel buffer.
+    func hlsSegmentRange(_ sequence: Int) -> (start: Int64, end: Int64)? {
+        locked {
+            guard let segment = hlsSegments.first(where: { $0.sequence == sequence }),
+                  segment.start >= oldestUnlocked else { return nil }
+            return (segment.start, segment.end)
+        }
+    }
+
+    var hlsSegmentCount: Int { locked { hlsSegments.count } }
+
     init() {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         directoryURL = dir.appendingPathComponent("Timeshift", isDirectory: true)
@@ -99,6 +164,11 @@ final class TimeshiftBuffer: @unchecked Sendable {
             patPacket = nil
             pmtPIDs = []
             pmtPackets = [:]
+            hlsSegments = []
+            hlsOpen = nil
+            hlsNextSequence = 0
+            hlsDroppedDiscontinuities = 0
+            hlsPendingDiscontinuity = false
             generationValue += 1
             condition.broadcast()
         }
@@ -185,6 +255,10 @@ final class TimeshiftBuffer: @unchecked Sendable {
         if let firstKey = keyframes.firstIndex(where: { $0 >= low }), firstKey > 0 {
             keyframes.removeFirst(firstKey)
         }
+        while let first = hlsSegments.first, first.start < low {
+            if first.discontinuity { hlsDroppedDiscontinuities += 1 }
+            hlsSegments.removeFirst()
+        }
         // Tiene l'ultima tabella valida prima del dato piu' vecchio, scarta le precedenti.
         if let keepFrom = psiHistory.lastIndex(where: { $0.offset <= low }), keepFrom > 0 {
             psiHistory.removeFirst(keepFrom)
@@ -202,6 +276,9 @@ final class TimeshiftBuffer: @unchecked Sendable {
             patPacket = nil
             pmtPIDs = []
             pmtPackets = [:]
+            // Nuovo canale: lo spezzone aperto del canale precedente si scarta, il prossimo e' una discontinuita'.
+            hlsOpen = nil
+            hlsPendingDiscontinuity = true
         }
     }
 
@@ -219,7 +296,10 @@ final class TimeshiftBuffer: @unchecked Sendable {
             if (adaptation == 2 || adaptation == 3) && bytes[i + 4] >= 1 && (bytes[i + 5] & 0x40) != 0,
                pid == pcrPID {
                 let keyOffset = base + Int64(i)
-                if keyframes.last.map({ keyOffset > $0 }) ?? true { keyframes.append(keyOffset) }
+                if keyframes.last.map({ keyOffset > $0 }) ?? true {
+                    keyframes.append(keyOffset)
+                    hlsKeyframe(at: keyOffset)
+                }
             }
             if (adaptation == 2 || adaptation == 3) && bytes[i + 4] >= 7 && (bytes[i + 5] & 0x10) != 0 {
                 if pcrPID == nil { pcrPID = pid }
@@ -541,8 +621,9 @@ final class TimeshiftServer: @unchecked Sendable {
 
     func start() async -> Bool {
         if port != 0 { return true }
+        // In ascolto su tutte le interfacce: il player del telefono usa 127.0.0.1, l'Apple TV (AirPlay)
+        // l'indirizzo Wi-Fi del telefono. Ogni richiesta deve portare il codice di sessione.
         let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
         parameters.allowLocalEndpointReuse = true
         guard let listener = try? NWListener(using: parameters) else { return false }
         self.listener = listener
@@ -599,6 +680,11 @@ final class TimeshiftServer: @unchecked Sendable {
             connection.send(content: Data(denied.utf8), completion: .contentProcessed { _ in connection.cancel() })
             return
         }
+        let path = parts.count >= 2 ? (URLComponents(string: String(parts[1]))?.path ?? "") : ""
+        if path.hasPrefix("/hls/") {
+            respondHLS(connection, path: path, isHead: parts.first == "HEAD")
+            return
+        }
         lock.lock(); requests += 1; lastFrom = from; lastRequest = Date(); lock.unlock()
         let isHead = parts.first == "HEAD"
         let header = "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
@@ -613,6 +699,53 @@ final class TimeshiftServer: @unchecked Sendable {
                 self.pump(connection, offset: start, generation: generation)
             })
         })
+    }
+
+    private var hlsRequests = 0
+    private var lastHLSRequest = Date.distantPast
+
+    /// Stato AirPlay per il log di diagnostica.
+    var hlsDiagnostics: String {
+        lock.lock(); defer { lock.unlock() }
+        let ago = lastHLSRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastHLSRequest))) s fa"
+        return "HLS (AirPlay): richieste \(hlsRequests), ultima \(ago), spezzoni nel buffer \(buffer.hlsSegmentCount)"
+    }
+
+    /// Playlist e spezzoni HLS per AirPlay.
+    private func respondHLS(_ connection: NWConnection, path: String, isHead: Bool) {
+        lock.lock(); hlsRequests += 1; lastHLSRequest = Date(); lock.unlock()
+        func send(_ status: String, _ type: String, _ body: Data) {
+            var head = "HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\n"
+            head += "Cache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+            var payload = Data(head.utf8)
+            if !isHead { payload.append(body) }
+            connection.send(content: payload, completion: .contentProcessed { _ in connection.cancel() })
+        }
+        if path == "/hls/live.m3u8" {
+            let playlist = buffer.hlsPlaylist(token: token)
+            if playlist.isEmpty { send("404 Not Found", "text/plain", Data()) }
+            else { send("200 OK", "application/vnd.apple.mpegurl", Data(playlist.utf8)) }
+            return
+        }
+        let name = (path as NSString).lastPathComponent
+        guard name.hasPrefix("seg-"), name.hasSuffix(".ts"),
+              let sequence = Int(name.dropFirst(4).dropLast(3)),
+              let range = buffer.hlsSegmentRange(sequence) else {
+            send("404 Not Found", "text/plain", Data())
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { connection.cancel(); return }
+            var body = self.buffer.psi(before: range.start)
+            var offset = range.start
+            while offset < range.end {
+                let chunk = self.buffer.read(offset: offset, max: Int(min(1_048_576, range.end - offset)), timeout: 0.5)
+                guard !chunk.data.isEmpty, chunk.next > offset else { break }
+                body.append(chunk.data)
+                offset = chunk.next
+            }
+            send(offset >= range.end ? "200 OK" : "404 Not Found", "video/mp2t", offset >= range.end ? body : Data())
+        }
     }
 
     private func pump(_ connection: NWConnection, offset: Int64, generation: Int) {
@@ -764,6 +897,33 @@ final class TimeshiftManager: ObservableObject {
         lastTuneOffset = liveStart
         if let firstKey = buffer.firstKeyframe(after: liveStart, within: 4_000_000) { lastTuneOffset = firstKey }
         return localURL(from: lastTuneOffset)
+    }
+
+    /// Playlist HLS raggiungibile dall'Apple TV (indirizzo Wi-Fi del telefono), o nil se non c'e' Wi-Fi.
+    func hlsURL() -> URL? {
+        guard server.port != 0, let address = Self.wifiAddress() else { return nil }
+        return URL(string: "http://\(address):\(server.port)/hls/live.m3u8?t=\(server.token)")
+    }
+
+    /// Indirizzo IPv4 del Wi-Fi (interfaccia en0).
+    static func wifiAddress() -> String? {
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&pointer) == 0, let first = pointer else { return nil }
+        defer { freeifaddrs(pointer) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            let interface = entry.pointee
+            if let address = interface.ifa_addr, address.pointee.sa_family == UInt8(AF_INET),
+               String(cString: interface.ifa_name) == "en0" {
+                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    return String(cString: host)
+                }
+            }
+            cursor = interface.ifa_next
+        }
+        return nil
     }
 
     func localURL(from offset: Int64) -> URL? {

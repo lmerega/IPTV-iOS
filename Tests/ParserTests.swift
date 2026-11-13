@@ -243,6 +243,42 @@ final class ParserTests: XCTestCase {
         XCTAssertFalse(StreamInfo.airPlayCompatibility(video: ["MPEG-2"], audio: ["MPEG audio"]).ok)
     }
 
+    /// Pacchetto TS con PCR e, se richiesto, random access indicator (fotogramma chiave).
+    private func keyPacket(pid: Int, seconds: Double, keyframe: Bool) -> Data {
+        var packet = [UInt8](pcrPacket(pid: pid, seconds: seconds))
+        if keyframe { packet[5] |= 0x40 }
+        return Data(packet)
+    }
+
+    func testHLSPlaylistFromBuffer() throws {
+        let buffer = TimeshiftBuffer()
+        buffer.reset(capacity: 64_000_000)
+        var stream = Data()
+        // 20 secondi: PCR ogni 0,5 s, fotogramma chiave ogni secondo.
+        for step in 0...40 {
+            let seconds = 100 + Double(step) * 0.5
+            stream.append(keyPacket(pid: 256, seconds: seconds, keyframe: step % 2 == 0))
+            stream.append(Data(repeating: 0xff, count: 0)) // nessun riempitivo
+        }
+        buffer.append(stream)
+        let playlist = buffer.hlsPlaylist(token: "abc")
+        XCTAssertTrue(playlist.hasPrefix("#EXTM3U"))
+        XCTAssertTrue(playlist.contains("#EXT-X-TARGETDURATION:"))
+        XCTAssertTrue(playlist.contains("seg-0.ts?t=abc"))
+        XCTAssertTrue(playlist.contains("#EXT-X-PROGRAM-DATE-TIME:"))
+        let range = try XCTUnwrap(buffer.hlsSegmentRange(0))
+        XCTAssertEqual(range.start % 188, 0)
+        XCTAssertGreaterThan(range.end, range.start)
+        XCTAssertGreaterThanOrEqual(buffer.hlsSegmentCount, 3)
+        // Cambio canale: il primo spezzone del nuovo canale e' una discontinuita'.
+        buffer.markSegment("B")
+        var next = Data()
+        for step in 0...20 { next.append(keyPacket(pid: 256, seconds: 500 + Double(step) * 0.5, keyframe: step % 2 == 0)) }
+        buffer.append(next)
+        XCTAssertTrue(buffer.hlsPlaylist(token: "abc").contains("#EXT-X-DISCONTINUITY"))
+        buffer.reset(capacity: 64_000_000)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

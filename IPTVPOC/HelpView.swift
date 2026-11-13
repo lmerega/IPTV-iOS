@@ -139,6 +139,16 @@ struct HelpView: View {
             Entry(title: "URL EPG XMLTV",
                   text: "Solo per M3U: l'indirizzo della guida programmi. Accetta anche file compressi .gz.")
         ]),
+        ("AirPlay", [
+            Entry(title: "Come si usa",
+                  text: "Nel player tocca il pulsante AirPlay (rettangolo con il triangolo) e scegli l'Apple TV. Con il timeshift attivo il video passa alla TV: il telefono fa da ponte, scarica dal provider con la sua unica connessione e la TV legge dal telefono. Pausa, ±30 s, barra del timeshift e Diretta si comandano dal telefono."),
+            Entry(title: "Cosa serve",
+                  text: "Telefono e Apple TV sulla stessa rete Wi-Fi di casa; la prima volta iOS chiede il permesso \"Rete locale\": va concesso. Il telefono puo' restare bloccato in tasca."),
+            Entry(title: "Canali non compatibili",
+                  text: "Va in AirPlay video il formato H.264 con audio AAC, AC-3 o E-AC-3. I canali con audio MP2 (per esempio Rai RAW) o video HEVC restano su VLC: sulla TV arriva solo l'audio. Per quelli usa Centro di Controllo → Duplica schermo."),
+            Entry(title: "Film",
+                  text: "I film MP4 vanno in AirPlay con il pulsante dei controlli del video. In AirPlay la diretta e' qualche secondo piu' indietro.")
+        ]),
         ("Una sola connessione", [
             Entry(title: "Perche'",
                   text: "Molti abbonamenti permettono una o due connessioni contemporanee. L'app ne usa sempre una sola: diretta, timeshift e registrazione condividono lo stesso download."),

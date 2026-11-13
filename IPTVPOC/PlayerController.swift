@@ -21,6 +21,12 @@ final class PlayerController: ObservableObject {
     @Published var streamInfo: String?
     /// Esito della verifica AirPlay per il flusso in riproduzione (fase 0 del piano AirPlay).
     @Published var airPlayVerdict: String?
+    /// Video in AirPlay: AVPlayer legge la playlist HLS dal telefono e la manda all'Apple TV.
+    @Published var airPlayActive = false
+    /// Avviso da mostrare (es. canale non compatibile con AirPlay video).
+    @Published var airPlayNotice: String?
+    private var routeObserver: NSObjectProtocol?
+    var airPlayCompatible: Bool { airPlayVerdict?.hasPrefix("compatibile") == true }
     @Published var audioTracks: [MediaTrack] = []
     @Published var subtitleTracks: [MediaTrack] = []
     @Published var currentAudio: Int32 = -1
@@ -89,6 +95,11 @@ final class PlayerController: ObservableObject {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         player.allowsExternalPlayback = true
+        player.usesExternalPlaybackWhileExternalScreenIsActive = true
+        routeObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
+                                                               object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.handleRouteChange() }
+        }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1),
                                                       queue: .main) { [weak self] time in
             let seconds = time.seconds
@@ -340,7 +351,11 @@ final class PlayerController: ObservableObject {
         currentTime = seconds
         if tsActive {
             let timeshift = TimeshiftManager.shared
-            tsPosition = tsStartDate.addingTimeInterval(seconds)
+            if airPlayActive, let date = player.currentItem?.currentDate() {
+                tsPosition = date
+            } else {
+                tsPosition = tsStartDate.addingTimeInterval(seconds)
+            }
             tsRange = timeshift.buffer.dateRange
             timeshift.playbackDate = tsPosition
         }
@@ -669,6 +684,14 @@ final class PlayerController: ObservableObject {
     func seekTimeshift(to target: Date) {
         let timeshift = TimeshiftManager.shared
         guard tsActive, let range = timeshift.buffer.dateRange else { return }
+        if airPlayActive {
+            // In AirPlay si sposta AVPlayer nella playlist del buffer (stesse date del timeshift).
+            let live = timeshift.buffer.liveDate ?? Date()
+            let clamped = min(max(range.lowerBound.addingTimeInterval(2), target), live.addingTimeInterval(-8))
+            log("AirPlay: vado a \(clamped.formatted(date: .omitted, time: .standard))")
+            player.currentItem?.seek(to: clamped, completionHandler: nil)
+            return
+        }
         let live = timeshift.buffer.liveDate ?? Date()
         if target >= live.addingTimeInterval(-6) { goLive(); return }
         let clamped = max(range.lowerBound.addingTimeInterval(2), target)
@@ -682,6 +705,10 @@ final class PlayerController: ObservableObject {
 
     func goLive() {
         let timeshift = TimeshiftManager.shared
+        if airPlayActive {
+            seekTimeshift(to: (timeshift.buffer.liveDate ?? Date()).addingTimeInterval(-8))
+            return
+        }
         let offset = timeshift.liveOffset
         guard tsActive, let url = timeshift.localURL(from: offset) else { return }
         tsStartDate = timeshift.buffer.date(at: offset) ?? Date()
@@ -753,7 +780,84 @@ final class PlayerController: ObservableObject {
         else { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
     }
 
+    // MARK: AirPlay
+
+    private var externalRouteActive: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .airPlay }
+    }
+
+    /// Scelta l'Apple TV dal pulsante AirPlay: con il timeshift attivo e un canale compatibile si passa
+    /// da VLC ad AVPlayer sulla playlist HLS del buffer; scollegando l'AirPlay si torna a VLC dallo stesso punto.
+    private func handleRouteChange() {
+        if externalRouteActive && !airPlayActive { enterAirPlay() }
+        else if !externalRouteActive && airPlayActive { exitAirPlay() }
+    }
+
+    func enterAirPlay() {
+        guard engine == .vlc else { return } // AVPlayer (film MP4, HLS del provider) va gia' in AirPlay da solo
+        guard tsActive else {
+            airPlayNotice = "In AirPlay va solo l'audio: il video passa alla TV con il timeshift attivo"
+            log("AirPlay: solo audio, timeshift non attivo")
+            return
+        }
+        guard airPlayCompatible else {
+            airPlayNotice = "Questo canale non va in AirPlay video (\(airPlayVerdict ?? "formato non verificato")): sulla TV arriva solo l'audio. Usa Duplica schermo."
+            log("AirPlay: \(airPlayVerdict ?? "formato non verificato"), resta VLC")
+            return
+        }
+        guard let url = TimeshiftManager.shared.hlsURL() else {
+            airPlayNotice = "AirPlay video richiede il Wi-Fi: il telefono deve essere sulla stessa rete dell'Apple TV"
+            log("AirPlay: nessun indirizzo Wi-Fi")
+            return
+        }
+        let position = tsPosition
+        log("AirPlay: passo ad AVPlayer, la TV legge la playlist dal telefono")
+        airPlayActive = true
+        vlc.stop()
+        engine = .avplayer
+        isBuffering = true
+        isPaused = false
+        let item = AVPlayerItem(url: url)
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            let status = item.status
+            let text = item.error?.localizedDescription
+            Task { @MainActor in self?.airPlayItemChanged(status, text, position: position) }
+        }
+        player.replaceCurrentItem(with: item)
+        player.play()
+    }
+
+    private func airPlayItemChanged(_ status: AVPlayerItem.Status, _ text: String?, position: Date) {
+        guard airPlayActive else { return }
+        switch status {
+        case .readyToPlay:
+            isBuffering = false
+            log("AirPlay: in riproduzione sulla TV")
+            seekTimeshift(to: position)
+        case .failed:
+            log("AirPlay: errore \(text ?? "")")
+            airPlayNotice = "AirPlay non riuscito: torno sul telefono"
+            exitAirPlay()
+        default:
+            break
+        }
+    }
+
+    func exitAirPlay() {
+        guard airPlayActive else { return }
+        let date = player.currentItem?.currentDate() ?? tsPosition
+        airPlayActive = false
+        statusObservation = nil
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        engine = .vlc
+        log("AirPlay terminato: torno a VLC dallo stesso punto")
+        seekTimeshift(to: date)
+    }
+
     func stop() {
+        if let routeObserver { NotificationCenter.default.removeObserver(routeObserver); self.routeObserver = nil }
+        airPlayActive = false
         // Nel log di sessione resta il bilancio del canale: utile per capire "niente audio" su un canale gia' chiuso.
         if engine == .vlc, let health = vlc.health {
             let codecs = vlc.trackCodecs()

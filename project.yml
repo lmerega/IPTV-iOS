@@ -23,6 +23,7 @@ targets:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:
           - audio
+        NSLocalNetworkUsageDescription: "Per mandare diretta e timeshift alla Apple TV con AirPlay: la TV legge il video da questo telefono sulla rete di casa."
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}
