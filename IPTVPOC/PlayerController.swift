@@ -26,6 +26,10 @@ final class PlayerController: ObservableObject {
     /// Posizione in AirPlay: data del punto raggiunto con l'ultimo salto + tempo trascorso nel player.
     /// (La data del player calcolata dalla playlist risultava sfasata di circa un minuto.)
     private var airPlayBase: (date: Date, time: Double)?
+    private var airPlayStarted = Date()
+    private var externalObservation: NSKeyValueObservation?
+    /// Identifica questo player nel log di sessione.
+    let sessionID = UUID()
     /// Avviso da mostrare (es. canale non compatibile con AirPlay video).
     @Published var airPlayNotice: String?
     private var routeObserver: NSObjectProtocol?
@@ -320,7 +324,7 @@ final class PlayerController: ObservableObject {
         let stamp = Date().formatted(.dateTime.hour().minute().second())
         logLines.append("\(stamp) \(text)")
         if logLines.count > 120 { logLines.removeFirst(logLines.count - 120) }
-        SessionLog.shared.add(title, text)
+        SessionLog.shared.add(title, text, owner: sessionID)
     }
 
     private func describe(_ url: URL) -> String {
@@ -784,6 +788,11 @@ final class PlayerController: ObservableObject {
         }
         log("AirPlay: \(airPlayVerdict ?? "")")
         SessionLog.shared.recordAirPlay(title, airPlayVerdict ?? "")
+        // Canale aperto con l'Apple TV gia' scelta: il video va subito sulla TV.
+        if externalRouteActive && !airPlayActive && engine == .vlc {
+            log("AirPlay: Apple TV gia' collegata, mando il video")
+            enterAirPlay()
+        }
     }
 
     /// Riparte dall'inizio della registrazione in corso (stesso buffer timeshift).
@@ -892,6 +901,15 @@ final class PlayerController: ObservableObject {
         let position = tsPosition
         log("AirPlay: passo ad AVPlayer, la TV legge la playlist dal telefono")
         airPlayActive = true
+        airPlayStarted = Date()
+        externalObservation = player.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] player, _ in
+            let active = player.isExternalPlaybackActive
+            Task { @MainActor in
+                guard let self, self.airPlayActive else { return }
+                let seconds = Int(Date().timeIntervalSince(self.airPlayStarted))
+                self.log(active ? "AirPlay: video sulla TV dopo \(seconds) s" : "AirPlay: video non piu' sulla TV")
+            }
+        }
         vlc.stop()
         engine = .avplayer
         isBuffering = true
@@ -985,6 +1003,7 @@ final class PlayerController: ObservableObject {
     func exitAirPlay() {
         guard airPlayActive else { return }
         airPlayBase = nil
+        externalObservation = nil
         if let file = airPlayFile {
             let seconds = player.currentTime().seconds
             airPlayActive = false

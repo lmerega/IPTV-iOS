@@ -71,7 +71,7 @@ enum LogUploader {
             lines.append("--- AirPlay, contenuti visti in questa sessione ---")
             lines.append(contentsOf: session.airPlay.map { "\($0.title): \($0.verdict)" })
         }
-        let earlier = session.lines.filter { !$0.contains("[\(controller.title)]") }
+        let earlier = session.lines(excluding: controller.sessionID)
         if !earlier.isEmpty {
             lines.append("--- sessione: altri canali e contenuti (ultime \(min(earlier.count, 300)) righe) ---")
             lines.append(contentsOf: earlier.suffix(300))

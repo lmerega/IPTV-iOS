@@ -113,13 +113,23 @@ final class WatchHistory: ObservableObject {
 final class SessionLog {
     static let shared = SessionLog()
     private(set) var lines: [String] = []
+    private var owners: [UUID] = []
     /// Esito della verifica AirPlay per ogni contenuto visto (titolo -> esito), in ordine di visione.
     private(set) var airPlay: [(title: String, verdict: String)] = []
 
-    func add(_ title: String, _ text: String) {
+    func add(_ title: String, _ text: String, owner: UUID) {
         let stamp = Date().formatted(.dateTime.hour().minute().second())
         lines.append("\(stamp) [\(title)] \(text)")
-        if lines.count > 600 { lines.removeFirst(lines.count - 600) }
+        owners.append(owner)
+        if lines.count > 600 {
+            lines.removeFirst(lines.count - 600)
+            owners.removeFirst(owners.count - 600)
+        }
+    }
+
+    /// Righe degli altri player (canali e contenuti aperti prima di quello attuale, anche se e' lo stesso canale).
+    func lines(excluding owner: UUID) -> [String] {
+        zip(lines, owners).filter { $0.1 != owner }.map(\.0)
     }
 
     func recordAirPlay(_ title: String, _ verdict: String) {
