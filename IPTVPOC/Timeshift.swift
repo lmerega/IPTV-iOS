@@ -105,8 +105,13 @@ final class TimeshiftBuffer: @unchecked Sendable {
     }
 
     /// PAT/PMT valide per i dati a partire da `offset` (vuoto se non ancora viste).
+    /// Solo tabelle dello stesso canale: quelle del canale precedente (altri PID, stessa versione) farebbero
+    /// cercare a VLC tracce inesistenti e ignorare le vere, con audio mancante.
     func psi(before offset: Int64) -> Data {
-        locked { psiHistory.last(where: { $0.offset <= offset })?.data ?? psiHistory.first?.data ?? Data() }
+        locked {
+            let channelStart = segments.last(where: { $0.offset <= offset })?.offset ?? 0
+            return psiHistory.last(where: { $0.offset <= offset && $0.offset >= channelStart })?.data ?? Data()
+        }
     }
 
     /// Inizio del payload di un pacchetto TS (dopo l'eventuale adaptation field), o nil.
