@@ -78,14 +78,20 @@ final class TimeshiftBuffer: @unchecked Sendable {
     /// piu' vecchio. Le date (PROGRAM-DATE-TIME) sono le stesse del timeshift, cosi' le posizioni coincidono.
     func hlsPlaylist(token: String) -> String {
         locked {
-            guard !hlsSegments.isEmpty else { return "" }
-            let target = Int((hlsSegments.map(\.duration).max() ?? 6).rounded(.up))
+            // Solo il canale attuale: dall'ultimo cambio canale in poi (prima c'erano altri canali, magari
+            // con audio che la TV non sa leggere).
+            let first = hlsSegments.lastIndex(where: { $0.discontinuity }) ?? 0
+            let window = hlsSegments[first...]
+            guard let head = window.first else { return "" }
+            let skipped = hlsDroppedDiscontinuities + hlsSegments[..<first].filter { $0.discontinuity }.count
+            let target = Int((window.map(\.duration).max() ?? 6).rounded(.up))
             var lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:\(target)",
-                         "#EXT-X-MEDIA-SEQUENCE:\(hlsSegments[0].sequence)",
-                         "#EXT-X-DISCONTINUITY-SEQUENCE:\(hlsDroppedDiscontinuities)"]
+                         "#EXT-X-MEDIA-SEQUENCE:\(head.sequence)",
+                         "#EXT-X-DISCONTINUITY-SEQUENCE:\(skipped)",
+                         "#EXT-X-START:TIME-OFFSET=-8.0"]
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            for segment in hlsSegments {
+            for segment in window {
                 if segment.discontinuity { lines.append("#EXT-X-DISCONTINUITY") }
                 lines.append("#EXT-X-PROGRAM-DATE-TIME:" + formatter.string(from: anchor.addingTimeInterval(segment.time)))
                 lines.append(String(format: "#EXTINF:%.3f,", segment.duration))

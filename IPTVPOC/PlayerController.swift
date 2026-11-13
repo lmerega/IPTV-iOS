@@ -846,9 +846,18 @@ final class PlayerController: ObservableObject {
     }
 
     private var airPlayWaitingTicks = 0
+    private var airPlayErrorsSeen = 0
 
     /// La TV resta in attesa di dati: si annota il motivo e gli errori riportati dal player di Apple.
     private func checkAirPlayStall() {
+        // Errori nuovi del player di Apple (spezzone rifiutato, formato non valido...): subito nel log.
+        if airPlayActive, let events = player.currentItem?.errorLog()?.events, events.count > airPlayErrorsSeen {
+            for event in events.suffix(events.count - airPlayErrorsSeen) {
+                let uri = ((event.uri ?? "").components(separatedBy: "?").first ?? "") as NSString
+                log("AirPlay: errore del player \(event.errorStatusCode) \(event.errorDomain) \(event.errorComment ?? "") \(uri.lastPathComponent)")
+            }
+            airPlayErrorsSeen = events.count
+        }
         guard airPlayActive, !isPaused, player.timeControlStatus == .waitingToPlayAtSpecifiedRate else {
             airPlayWaitingTicks = 0
             return
@@ -1057,6 +1066,7 @@ final class PlayerController: ObservableObject {
             }
             guard airPlayActive, transcodeIndex === index else { return }
             log("AirPlay: conversione \(index.bytesScanned / 1_048_576) MB scritti, \(index.segmentCount) spezzoni")
+            log("AirPlay: primo spezzone convertito \(index.describeFirstSegment())")
             guard index.segmentCount > 0,
                   let url = TimeshiftManager.shared.lanURL(path: TimeshiftManager.shared.server.registerGrowing(index)) else {
                 log("AirPlay: la conversione non produce spezzoni utilizzabili")
@@ -1077,7 +1087,7 @@ final class PlayerController: ObservableObject {
                         self.isBuffering = false
                         // La conversione parte dal punto in cui si era: si guarda dall'inizio della playlist.
                         self.player.seek(to: .zero)
-                        self.airPlayBase = (self.tsPosition, 0)
+                        self.airPlayBase = (origin.date ?? self.tsPosition, 0)
                         self.log("AirPlay: conversione sulla TV dopo \(Int(Date().timeIntervalSince(self.airPlayStarted))) s")
                     } else if status == .failed {
                         self.log("AirPlay: errore \(text ?? "")")
@@ -1149,6 +1159,7 @@ final class PlayerController: ObservableObject {
 
     func exitAirPlay() {
         guard airPlayActive else { return }
+        airPlayErrorsSeen = 0
         if let origin = transcodeOrigin {
             // Ritorno da una conversione: si riparte sul telefono dal punto raggiunto sulla TV.
             let played = player.currentTime().seconds

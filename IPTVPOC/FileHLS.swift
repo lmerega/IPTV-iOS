@@ -305,6 +305,44 @@ final class GrowingHLS: @unchecked Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// Tracce e pacchetti del primo spezzone convertito (per il log): mostra se VLC ha scritto audio e video.
+    func describeFirstSegment() -> String {
+        guard let data = segmentData(0) else { return "nessuno spezzone" }
+        let bytes = [UInt8](data)
+        var counts: [Int: Int] = [:]
+        var types: [Int: UInt8] = [:]
+        var pmt: Set<Int> = []
+        var i = 0
+        while i + 188 <= bytes.count {
+            guard bytes[i] == 0x47 else { i += 1; continue }
+            let pid = (Int(bytes[i + 1] & 0x1f) << 8) | Int(bytes[i + 2])
+            counts[pid, default: 0] += 1
+            let adaptation = (bytes[i + 3] >> 4) & 0x3
+            if (bytes[i + 1] & 0x40) != 0, adaptation == 1 || adaptation == 3 {
+                let start = adaptation == 3 ? i + 5 + Int(bytes[i + 4]) : i + 4
+                if start < i + 188 {
+                    let section = start + 1 + Int(bytes[start])
+                    if pid == 0, section + 12 < i + 188 {
+                        pmt.insert((Int(bytes[section + 10] & 0x1f) << 8) | Int(bytes[section + 11]))
+                    } else if pmt.contains(pid), section + 12 < i + 188, bytes[section] == 0x02 {
+                        let length = (Int(bytes[section + 1] & 0x0f) << 8) | Int(bytes[section + 2])
+                        let info = (Int(bytes[section + 10] & 0x0f) << 8) | Int(bytes[section + 11])
+                        var cursor = section + 12 + info
+                        let last = min(i + 188, section + 3 + length) - 4
+                        while cursor + 5 <= last {
+                            types[(Int(bytes[cursor + 1] & 0x1f) << 8) | Int(bytes[cursor + 2])] = bytes[cursor]
+                            cursor += 5 + ((Int(bytes[cursor + 3] & 0x0f) << 8) | Int(bytes[cursor + 4]))
+                        }
+                    }
+                }
+            }
+            i += 188
+        }
+        let names: [UInt8: String] = [0x1B: "H.264", 0x0F: "AAC", 0x11: "AAC-LATM", 0x03: "MP2", 0x04: "MP2", 0x81: "AC-3", 0x24: "HEVC"]
+        let tracks = types.sorted { $0.key < $1.key }.map { "PID \($0.key) \(names[$0.value] ?? String(format: "0x%02X", $0.value)): \(counts[$0.key] ?? 0) pacchetti" }
+        return "\(data.count / 1024) KB, " + (tracks.isEmpty ? "nessuna traccia nel PMT" : tracks.joined(separator: ", "))
+    }
+
     func segmentData(_ index: Int) -> Data? {
         lock.lock()
         let segment = segments.indices.contains(index) ? segments[index] : nil
