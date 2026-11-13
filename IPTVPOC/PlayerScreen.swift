@@ -60,7 +60,10 @@ struct PlayerScreen: View {
         .onChange(of: aspectRaw, initial: true) { controller.vlc.aspect = aspect }
         .onChange(of: controller.finished) { _, done in if done { startNextCountdown() } }
         .onChange(of: controller.airPlayNotice) { _, notice in
-            if let notice { showToast(notice); controller.airPlayNotice = nil }
+            guard let notice else { return }
+            if controller.airPlayAudioOnly != nil { controller.airPlayAudioOnly = notice }
+            showToast(notice)
+            controller.airPlayNotice = nil
         }
         .modifier(ConnectionAlerts(inPlayer: true))
         .alert("Registrazione in corso", isPresented: Binding(
@@ -125,6 +128,17 @@ struct PlayerScreen: View {
             if (controller.engine == .vlc || controller.airPlayActive) && !fullscreen {
                 Color.clear.contentShape(Rectangle()).onTapGesture { showOverlay(!overlayVisible) }
                     .gesture(zapGesture)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            // Striscia fissa finche' l'AirPlay resta su "solo audio": il motivo non deve sparire con il toast.
+            if let reason = controller.airPlayAudioOnly {
+                Label(reason, systemImage: "airplayaudio")
+                    .font(.caption).foregroundStyle(.white)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 8))
+                    .padding(8)
+                    .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .topLeading) {

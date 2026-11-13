@@ -32,6 +32,8 @@ final class PlayerController: ObservableObject {
     let sessionID = UUID()
     /// Avviso da mostrare (es. canale non compatibile con AirPlay video).
     @Published var airPlayNotice: String?
+    /// Sulla TV arriva solo l'audio (canale o contenuto non compatibile): motivo da mostrare fisso nel player.
+    @Published var airPlayAudioOnly: String?
     private var routeObserver: NSObjectProtocol?
     var airPlayCompatible: Bool { airPlayVerdict?.hasPrefix("compatibile") == true }
     /// Registrazione mandata in AirPlay (playlist VOD dal telefono).
@@ -880,6 +882,7 @@ final class PlayerController: ObservableObject {
     /// Scelta l'Apple TV dal pulsante AirPlay: con il timeshift attivo e un canale compatibile si passa
     /// da VLC ad AVPlayer sulla playlist HLS del buffer; scollegando l'AirPlay si torna a VLC dallo stesso punto.
     private func handleRouteChange() {
+        if !externalRouteActive { airPlayAudioOnly = nil }
         if externalRouteActive && !airPlayActive { enterAirPlay() }
         else if !externalRouteActive && airPlayActive { exitAirPlay() }
     }
@@ -897,23 +900,23 @@ final class PlayerController: ObservableObject {
                 return
             }
             if !url.isFileURL && !isLive {
-                airPlayNotice = "Questo film (\(ext.uppercased())) non va in AirPlay video: sulla TV arriva solo l'audio. Usa Duplica schermo."
+                airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "Questo film (\(ext.uppercased())) non va in AirPlay video: sulla TV arriva solo l'audio. Usa Duplica schermo."
                 log("AirPlay: formato \(ext) non supportato da AVPlayer")
                 return
             }
         }
         guard tsActive else {
-            airPlayNotice = "In AirPlay va solo l'audio: il video passa alla TV con il timeshift attivo"
+            airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "In AirPlay va solo l'audio: il video passa alla TV con il timeshift attivo"
             log("AirPlay: solo audio, timeshift non attivo")
             return
         }
         guard airPlayCompatible else {
-            airPlayNotice = "Questo canale non va in AirPlay video (\(airPlayVerdict ?? "formato non verificato")): sulla TV arriva solo l'audio. Usa Duplica schermo."
+            airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "Questo canale non va in AirPlay video (\(airPlayVerdict ?? "formato non verificato")): sulla TV arriva solo l'audio. Usa Duplica schermo."
             log("AirPlay: \(airPlayVerdict ?? "formato non verificato"), resta VLC")
             return
         }
         guard let url = TimeshiftManager.shared.hlsURL() else {
-            airPlayNotice = "AirPlay video richiede il Wi-Fi: il telefono deve essere sulla stessa rete dell'Apple TV"
+            airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "AirPlay video richiede il Wi-Fi: il telefono deve essere sulla stessa rete dell'Apple TV"
             log("AirPlay: nessun indirizzo Wi-Fi")
             return
         }
@@ -973,7 +976,7 @@ final class PlayerController: ObservableObject {
     /// Registrazione .ts in AirPlay: indice degli spezzoni (letto dal file), playlist VOD servita dal telefono.
     private func enterAirPlayRecording(_ url: URL) {
         guard airPlayCompatible else {
-            airPlayNotice = "Questa registrazione non va in AirPlay video (\(airPlayVerdict ?? "formato non verificato")). Usa Duplica schermo."
+            airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "Questa registrazione non va in AirPlay video (\(airPlayVerdict ?? "formato non verificato")). Usa Duplica schermo."
             return
         }
         let position = currentTime
