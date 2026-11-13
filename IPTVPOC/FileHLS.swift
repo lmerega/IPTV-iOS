@@ -1,0 +1,132 @@
+import Foundation
+
+/// Indice HLS di un file .ts registrato: spezzoni da circa 4 secondi tagliati sui fotogrammi chiave,
+/// con le tabelle PAT/PMT del file. Serve per mandare le registrazioni in AirPlay (playlist VOD).
+final class FileHLS: @unchecked Sendable {
+    struct Segment {
+        let start: Int64
+        let end: Int64
+        let duration: Double
+    }
+
+    let url: URL
+    let segments: [Segment]
+    let psi: Data
+    var totalDuration: Double { segments.reduce(0) { $0 + $1.duration } }
+
+    private init(url: URL, segments: [Segment], psi: Data) {
+        self.url = url
+        self.segments = segments
+        self.psi = psi
+    }
+
+    /// Legge tutto il file (alcuni secondi per i file grandi): da chiamare fuori dal thread principale.
+    static func build(url: URL, targetSeconds: Double = 4) -> FileHLS? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        guard fileSize > 188 * 10 else { return nil }
+
+        var keyframes: [(offset: Int64, time: Double)] = []
+        var pcrPID: Int?
+        var lastPCR: Double?
+        var timeline = 0.0
+        var pat: Data?
+        var pmtPIDs: Set<Int> = []
+        var pmts: [Int: Data] = [:]
+        var carry = [UInt8]()
+        var base: Int64 = 0
+
+        while true {
+            guard let chunk = try? handle.read(upToCount: 4_194_304), !chunk.isEmpty else { break }
+            var bytes = carry
+            bytes.append(contentsOf: chunk)
+            var i = 0
+            while i + 188 <= bytes.count {
+                guard bytes[i] == 0x47 else { i += 1; continue }
+                let pid = (Int(bytes[i + 1] & 0x1f) << 8) | Int(bytes[i + 2])
+                let adaptation = (bytes[i + 3] >> 4) & 0x3
+                let hasAdaptation = adaptation == 2 || adaptation == 3
+                // Tabelle PAT/PMT (solo le prime trovate).
+                if (bytes[i + 1] & 0x40) != 0, adaptation == 1 || adaptation == 3 {
+                    let start = adaptation == 3 ? i + 5 + Int(bytes[i + 4]) : i + 4
+                    if start < i + 188 {
+                        let section = start + 1 + Int(bytes[start])
+                        if pid == 0, pat == nil, section + 8 < i + 188, bytes[section] == 0x00 {
+                            let length = (Int(bytes[section + 1] & 0x0f) << 8) | Int(bytes[section + 2])
+                            let last = min(i + 188, section + 3 + length) - 4
+                            var cursor = section + 8
+                            while cursor + 4 <= last {
+                                let program = (Int(bytes[cursor]) << 8) | Int(bytes[cursor + 1])
+                                if program != 0 { pmtPIDs.insert((Int(bytes[cursor + 2] & 0x1f) << 8) | Int(bytes[cursor + 3])) }
+                                cursor += 4
+                            }
+                            pat = Data(bytes[i..<(i + 188)])
+                        } else if pmtPIDs.contains(pid), pmts[pid] == nil {
+                            pmts[pid] = Data(bytes[i..<(i + 188)])
+                        }
+                    }
+                }
+                if hasAdaptation, bytes[i + 4] >= 1, (bytes[i + 5] & 0x40) != 0, pid == pcrPID {
+                    keyframes.append((base + Int64(i), timeline))
+                }
+                if hasAdaptation, bytes[i + 4] >= 7, (bytes[i + 5] & 0x10) != 0 {
+                    if pcrPID == nil { pcrPID = pid }
+                    if pid == pcrPID {
+                        var value = UInt64(bytes[i + 6]) << 25
+                        value |= UInt64(bytes[i + 7]) << 17
+                        value |= UInt64(bytes[i + 8]) << 9
+                        value |= UInt64(bytes[i + 9]) << 1
+                        value |= UInt64(bytes[i + 10]) >> 7
+                        let pcr = Double(value) / 90_000
+                        if let previous = lastPCR {
+                            var delta = pcr - previous
+                            if delta < -47_000 { delta += 95_443.717_688_9 }
+                            if delta > 0 && delta < 5 { timeline += delta } else if delta != 0 { timeline += 0.04 }
+                        }
+                        lastPCR = pcr
+                    }
+                }
+                i += 188
+            }
+            carry = i < bytes.count ? Array(bytes[i...]) : []
+            base += Int64(i)
+        }
+
+        guard let first = keyframes.first else { return nil }
+        var segments: [Segment] = []
+        var open = first
+        for key in keyframes.dropFirst() where key.time - open.time >= targetSeconds && key.offset > open.offset {
+            segments.append(Segment(start: open.offset, end: key.offset, duration: key.time - open.time))
+            open = key
+        }
+        let tail = max(0.5, timeline - open.time)
+        if fileSize > open.offset { segments.append(Segment(start: open.offset, end: fileSize, duration: tail)) }
+        var psi = pat ?? Data()
+        for key in pmtPIDs.sorted() { psi.append(pmts[key] ?? Data()) }
+        return FileHLS(url: url, segments: segments, psi: psi)
+    }
+
+    /// Playlist VOD completa (si puo' saltare ovunque).
+    func playlist(prefix: String, token: String) -> String {
+        let target = Int((segments.map(\.duration).max() ?? 6).rounded(.up))
+        var lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-PLAYLIST-TYPE:VOD",
+                     "#EXT-X-TARGETDURATION:\(target)", "#EXT-X-MEDIA-SEQUENCE:0"]
+        for (index, segment) in segments.enumerated() {
+            lines.append(String(format: "#EXTINF:%.3f,", segment.duration))
+            lines.append("\(prefix)seg-\(index).ts?t=\(token)")
+        }
+        lines.append("#EXT-X-ENDLIST")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Byte dello spezzone, preceduti da PAT/PMT.
+    func segmentData(_ index: Int) -> Data? {
+        guard segments.indices.contains(index), let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let segment = segments[index]
+        guard (try? handle.seek(toOffset: UInt64(segment.start))) != nil,
+              let data = try? handle.read(upToCount: Int(segment.end - segment.start)) else { return nil }
+        return psi + data
+    }
+}

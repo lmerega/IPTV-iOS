@@ -146,8 +146,10 @@ struct HelpView: View {
                   text: "Telefono e Apple TV sulla stessa rete Wi-Fi di casa; la prima volta iOS chiede il permesso \"Rete locale\": va concesso. Il telefono puo' restare bloccato in tasca."),
             Entry(title: "Canali non compatibili",
                   text: "Va in AirPlay video il formato H.264 con audio AAC, AC-3 o E-AC-3. I canali con audio MP2 (per esempio Rai RAW) o video HEVC restano su VLC: sulla TV arriva solo l'audio. Per quelli usa Centro di Controllo → Duplica schermo."),
+            Entry(title: "Registrazioni",
+                  text: "Anche le registrazioni salvate vanno in AirPlay: alla scelta dell'Apple TV l'app prepara l'indice del file (qualche secondo per quelle lunghe) e la TV riparte dal punto in cui eri. Chiudendo l'AirPlay si torna sul telefono dallo stesso punto."),
             Entry(title: "Film",
-                  text: "I film MP4 vanno in AirPlay con il pulsante dei controlli del video. In AirPlay la diretta e' qualche secondo piu' indietro.")
+                  text: "I film MP4 vanno in AirPlay (anche se li avevi riaperti con VLC). I film MKV/AVI no: sulla TV arriva solo l'audio, usa Duplica schermo. In AirPlay la diretta e' qualche secondo piu' indietro.")
         ]),
         ("Una sola connessione", [
             Entry(title: "Perche'",

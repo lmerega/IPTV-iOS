@@ -166,6 +166,22 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
+                Section("AirPlay") {
+                    if let address = TimeshiftManager.wifiAddress() {
+                        Label("Pronto: Wi-Fi \(address). Diretta, timeshift e registrazioni compatibili vanno sulla Apple TV.",
+                              systemImage: "airplayvideo")
+                            .font(.footnote)
+                    } else {
+                        Label("Wi-Fi non attivo: AirPlay video richiede che telefono e Apple TV siano sulla stessa rete Wi-Fi.",
+                              systemImage: "wifi.exclamationmark")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                    if !timeshift.enabled {
+                        Text("Attiva il timeshift: il video in AirPlay passa dal buffer del telefono.")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                }
+
                 Section("Rete") {
                     Button(network.running ? "Verifica in corso…" : "Verifica connessione", systemImage: "network") {
                         Task { await network.run(source: model.current) }

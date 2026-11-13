@@ -685,6 +685,10 @@ final class TimeshiftServer: @unchecked Sendable {
             respondHLS(connection, path: path, isHead: parts.first == "HEAD")
             return
         }
+        if path.hasPrefix("/rec/") {
+            respondRecording(connection, path: path, isHead: parts.first == "HEAD")
+            return
+        }
         lock.lock(); requests += 1; lastFrom = from; lastRequest = Date(); lock.unlock()
         let isHead = parts.first == "HEAD"
         let header = "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
@@ -709,6 +713,43 @@ final class TimeshiftServer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let ago = lastHLSRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastHLSRequest))) s fa"
         return "HLS (AirPlay): richieste \(hlsRequests), ultima \(ago), spezzoni nel buffer \(buffer.hlsSegmentCount)"
+    }
+
+    // MARK: Registrazioni in AirPlay
+
+    private var files: [String: FileHLS] = [:]
+
+    /// Rende disponibile un file registrato come playlist HLS; restituisce il percorso relativo della playlist.
+    func register(_ index: FileHLS) -> String {
+        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)
+        lock.lock(); files[String(id)] = index; lock.unlock()
+        return "/rec/\(id)/play.m3u8"
+    }
+
+    private func respondRecording(_ connection: NWConnection, path: String, isHead: Bool) {
+        lock.lock(); hlsRequests += 1; lastHLSRequest = Date(); lock.unlock()
+        let components = path.split(separator: "/").map(String.init) // ["rec", id, nome]
+        func send(_ status: String, _ type: String, _ body: Data) {
+            var head = "HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\n"
+            head += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n"
+            var payload = Data(head.utf8)
+            if !isHead { payload.append(body) }
+            connection.send(content: payload, completion: .contentProcessed { _ in connection.cancel() })
+        }
+        lock.lock(); let index = components.count == 3 ? files[components[1]] : nil; lock.unlock()
+        guard let index else { send("404 Not Found", "text/plain", Data()); return }
+        let name = components[2]
+        if name == "play.m3u8" {
+            send("200 OK", "application/vnd.apple.mpegurl", Data(index.playlist(prefix: "", token: token).utf8))
+            return
+        }
+        guard name.hasPrefix("seg-"), name.hasSuffix(".ts"), let number = Int(name.dropFirst(4).dropLast(3)) else {
+            send("404 Not Found", "text/plain", Data()); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let data = index.segmentData(number) { send("200 OK", "video/mp2t", data) }
+            else { send("404 Not Found", "text/plain", Data()) }
+        }
     }
 
     /// Playlist e spezzoni HLS per AirPlay.
@@ -903,6 +944,12 @@ final class TimeshiftManager: ObservableObject {
     func hlsURL() -> URL? {
         guard server.port != 0, let address = Self.wifiAddress() else { return nil }
         return URL(string: "http://\(address):\(server.port)/hls/live.m3u8?t=\(server.token)")
+    }
+
+    /// Indirizzo raggiungibile dall'Apple TV per un percorso del server locale.
+    func lanURL(path: String) -> URL? {
+        guard server.port != 0, let address = Self.wifiAddress() else { return nil }
+        return URL(string: "http://\(address):\(server.port)\(path)?t=\(server.token)")
     }
 
     /// Indirizzo IPv4 del Wi-Fi (interfaccia en0).

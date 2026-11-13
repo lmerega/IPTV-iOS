@@ -279,6 +279,25 @@ final class ParserTests: XCTestCase {
         buffer.reset(capacity: 64_000_000)
     }
 
+    func testFileHLSIndex() throws {
+        var stream = Data()
+        for step in 0...40 {
+            var packet = [UInt8](pcrPacket(pid: 256, seconds: 10 + Double(step) * 0.5))
+            if step % 2 == 0 { packet[5] |= 0x40 }
+            stream.append(Data(packet))
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hls-test-\(UUID().uuidString).ts")
+        try stream.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let index = try XCTUnwrap(FileHLS.build(url: url))
+        XCTAssertGreaterThanOrEqual(index.segments.count, 3)
+        XCTAssertEqual(index.totalDuration, 19, accuracy: 1.5)
+        let playlist = index.playlist(prefix: "", token: "x")
+        XCTAssertTrue(playlist.contains("#EXT-X-ENDLIST"))
+        XCTAssertTrue(playlist.contains("seg-0.ts?t=x"))
+        XCTAssertEqual(index.segmentData(0)?.count ?? 0 > 0, true)
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))

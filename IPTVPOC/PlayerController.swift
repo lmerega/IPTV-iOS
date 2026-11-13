@@ -27,6 +27,8 @@ final class PlayerController: ObservableObject {
     @Published var airPlayNotice: String?
     private var routeObserver: NSObjectProtocol?
     var airPlayCompatible: Bool { airPlayVerdict?.hasPrefix("compatibile") == true }
+    /// Registrazione mandata in AirPlay (playlist VOD dal telefono).
+    private var airPlayFile: URL?
     @Published var audioTracks: [MediaTrack] = []
     @Published var subtitleTracks: [MediaTrack] = []
     @Published var currentAudio: Int32 = -1
@@ -89,7 +91,9 @@ final class PlayerController: ObservableObject {
     }
 
     /// Barra di avanzamento per file e VOD riprodotti da VLC (AVPlayer ha i controlli nativi).
-    var showsMediaBar: Bool { catchupProgram == nil && !isLive && engine == .vlc && duration > 0 }
+    var showsMediaBar: Bool {
+        catchupProgram == nil && !isLive && (engine == .vlc || airPlayFile != nil) && duration > 0
+    }
 
     init() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -795,6 +799,22 @@ final class PlayerController: ObservableObject {
 
     func enterAirPlay() {
         guard engine == .vlc else { return } // AVPlayer (film MP4, HLS del provider) va gia' in AirPlay da solo
+        if !tsActive, catchupProgram == nil, let url = currentURL {
+            let ext = url.pathExtension.lowercased()
+            if url.isFileURL && ext == "ts" { enterAirPlayRecording(url); return }
+            if ["mp4", "m4v", "mov"].contains(ext) {
+                // Film MP4 aperto con VLC (es. "Riapri con VLC"): AVPlayer lo manda in AirPlay da solo.
+                log("AirPlay: film MP4, passo ad AVPlayer")
+                pendingSeek = currentTime
+                load(url, forceEngine: .avplayer)
+                return
+            }
+            if !url.isFileURL && !isLive {
+                airPlayNotice = "Questo film (\(ext.uppercased())) non va in AirPlay video: sulla TV arriva solo l'audio. Usa Duplica schermo."
+                log("AirPlay: formato \(ext) non supportato da AVPlayer")
+                return
+            }
+        }
         guard tsActive else {
             airPlayNotice = "In AirPlay va solo l'audio: il video passa alla TV con il timeshift attivo"
             log("AirPlay: solo audio, timeshift non attivo")
@@ -843,8 +863,69 @@ final class PlayerController: ObservableObject {
         }
     }
 
+    /// Registrazione .ts in AirPlay: indice degli spezzoni (letto dal file), playlist VOD servita dal telefono.
+    private func enterAirPlayRecording(_ url: URL) {
+        guard airPlayCompatible else {
+            airPlayNotice = "Questa registrazione non va in AirPlay video (\(airPlayVerdict ?? "formato non verificato")). Usa Duplica schermo."
+            return
+        }
+        let position = currentTime
+        airPlayActive = true
+        airPlayFile = url
+        isBuffering = true
+        message = "Preparo la registrazione per l'Apple TV…"
+        log("AirPlay: indicizzo la registrazione")
+        Task {
+            let index = await Task.detached(priority: .userInitiated) { FileHLS.build(url: url) }.value
+            _ = await TimeshiftManager.shared.server.start()
+            guard airPlayActive, airPlayFile == url else { return }
+            guard let index, !index.segments.isEmpty,
+                  let playlist = TimeshiftManager.shared.lanURL(path: TimeshiftManager.shared.server.register(index)) else {
+                airPlayNotice = "Registrazione non pronta per AirPlay: resta sul telefono"
+                airPlayActive = false
+                airPlayFile = nil
+                isBuffering = false
+                message = nil
+                return
+            }
+            log("AirPlay: \(index.segments.count) spezzoni, \(Int(index.totalDuration)) s")
+            message = nil
+            vlc.stop()
+            engine = .avplayer
+            let item = AVPlayerItem(url: playlist)
+            statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+                let status = item.status
+                Task { @MainActor in
+                    guard let self, self.airPlayActive else { return }
+                    if status == .readyToPlay {
+                        self.isBuffering = false
+                        self.player.seek(to: CMTime(seconds: position, preferredTimescale: 600))
+                        self.log("AirPlay: registrazione sulla TV")
+                    } else if status == .failed {
+                        self.airPlayNotice = "AirPlay non riuscito: torno sul telefono"
+                        self.exitAirPlay()
+                    }
+                }
+            }
+            player.replaceCurrentItem(with: item)
+            player.play()
+        }
+    }
+
     func exitAirPlay() {
         guard airPlayActive else { return }
+        if let file = airPlayFile {
+            let seconds = player.currentTime().seconds
+            airPlayActive = false
+            airPlayFile = nil
+            statusObservation = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            log("AirPlay terminato: torno a VLC sulla registrazione")
+            pendingSeek = seconds.isFinite ? seconds : currentTime
+            load(file, forceEngine: .vlc)
+            return
+        }
         let date = player.currentItem?.currentDate() ?? tsPosition
         airPlayActive = false
         statusObservation = nil
