@@ -754,6 +754,11 @@ final class PlayerController: ObservableObject {
     }
 
     func stop() {
+        // Nel log di sessione resta il bilancio del canale: utile per capire "niente audio" su un canale gia' chiuso.
+        if engine == .vlc, let health = vlc.health {
+            let codecs = vlc.trackCodecs()
+            log("Chiuso: video \(codecs.video.joined(separator: ",")), audio \(codecs.audio.joined(separator: ",")); \(health.summary)")
+        }
         saveProgress(force: true)
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         generation += 1
