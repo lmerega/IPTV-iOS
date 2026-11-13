@@ -179,6 +179,7 @@ final class PlayerController: ObservableObject {
         heartbeatCount += 1
         checkLocalServer()
         checkAirPlayStall()
+        pollAirPlay()
         if engine == .vlc {
             watchdog()
             freezeCheck()
@@ -846,6 +847,32 @@ final class PlayerController: ObservableObject {
     }
 
     private var airPlayWaitingTicks = 0
+    private var airPlayLastTime = -1.0
+    private var airPlayFrozenTicks = 0
+
+    /// In AirPlay il tempo del player si legge ogni secondo (gli aggiornamenti periodici non arrivano sempre
+    /// durante la riproduzione esterna). Se il tempo non avanza per 6 s mentre dovrebbe, il salto non e'
+    /// andato a buon fine: si riprova un poco piu' avanti.
+    private func pollAirPlay() {
+        guard airPlayActive, let item = player.currentItem, item.status == .readyToPlay else {
+            airPlayFrozenTicks = 0
+            return
+        }
+        let now = player.currentTime().seconds
+        guard now.isFinite else { return }
+        tick(now)
+        if isPaused || abs(now - airPlayLastTime) > 0.2 {
+            airPlayFrozenTicks = 0
+        } else {
+            airPlayFrozenTicks += 1
+            if airPlayFrozenTicks == 6 {
+                log("AirPlay: la TV non avanza da 6 s al tempo \(Int(now)) s, riprovo 2 s piu' avanti")
+                player.seek(to: CMTime(seconds: now + 2, preferredTimescale: 600))
+                player.play()
+            }
+        }
+        airPlayLastTime = now
+    }
     private var airPlayErrorsSeen = 0
 
     /// La TV resta in attesa di dati: si annota il motivo e gli errori riportati dal player di Apple.
