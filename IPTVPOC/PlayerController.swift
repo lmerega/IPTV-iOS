@@ -38,6 +38,12 @@ final class PlayerController: ObservableObject {
     var airPlayCompatible: Bool { airPlayVerdict?.hasPrefix("compatibile") == true }
     /// Registrazione mandata in AirPlay (playlist VOD dal telefono).
     private var airPlayFile: URL?
+    /// Conversione in corso per AirPlay (canale con audio MP2 o film MKV).
+    private var transcoder: AirPlayTranscoder?
+    private var transcodeIndex: GrowingHLS?
+    /// Da dove riprendere tornando sul telefono: canale (data nel buffer) o film (secondi).
+    private var transcodeOrigin: (date: Date?, seconds: Double?, url: URL?)?
+    private var lastCodecs: (video: [String], audio: [String]) = ([], [])
     @Published var audioTracks: [MediaTrack] = []
     @Published var subtitleTracks: [MediaTrack] = []
     @Published var currentAudio: Int32 = -1
@@ -709,6 +715,7 @@ final class PlayerController: ObservableObject {
             airPlaySeek(by: target.timeIntervalSince(tsPosition))
             return
         }
+        if transcodeOrigin != nil { return }
         let live = timeshift.buffer.liveDate ?? Date()
         if target >= live.addingTimeInterval(-6) { goLive(); return }
         let clamped = max(range.lowerBound.addingTimeInterval(2), target)
@@ -775,7 +782,11 @@ final class PlayerController: ObservableObject {
         } else {
             let codecs = vlc.trackCodecs()
             guard !codecs.video.isEmpty || !codecs.audio.isEmpty else { return }
+            lastCodecs = codecs
             airPlayVerdict = StreamInfo.airPlayCompatibility(video: codecs.video, audio: codecs.audio).detail
+            if !airPlayCompatible && StreamInfo.airPlayConvertible(video: codecs.video, audio: codecs.audio) {
+                airPlayVerdict = (airPlayVerdict ?? "") + "; convertibile (audio in AAC)"
+            }
         }
         log("AirPlay: \(airPlayVerdict ?? "")")
         SessionLog.shared.recordAirPlay(title, airPlayVerdict ?? "")
@@ -821,7 +832,7 @@ final class PlayerController: ObservableObject {
             log(ok ? "Server locale riaperto (porta \(server.port))\(server.port == oldPort ? "" : ", porta cambiata")"
                    : "Server locale: impossibile riaprirlo")
             guard ok else { return }
-            if airPlayActive, airPlayFile == nil {
+            if airPlayActive, airPlayFile == nil, transcodeOrigin == nil {
                 reloadAirPlayItem(at: position)
             } else if tsActive, engine == .vlc {
                 seekTimeshift(to: position)
@@ -900,14 +911,26 @@ final class PlayerController: ObservableObject {
                 return
             }
             if !url.isFileURL && !isLive {
-                airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "Questo film (\(ext.uppercased())) non va in AirPlay video: sulla TV arriva solo l'audio. Usa Duplica schermo."
-                log("AirPlay: formato \(ext) non supportato da AVPlayer")
+                // Film MKV/AVI: VLC lo rimpacchetta in TS (audio in AAC) e la TV legge la conversione.
+                guard StreamInfo.airPlayConvertible(video: lastCodecs.video, audio: lastCodecs.audio) else {
+                    airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "Questo film (\(ext.uppercased()), \(lastCodecs.video.joined(separator: ","))) non va in AirPlay video: serve video H.264. Usa Duplica schermo."
+                    log("AirPlay: film \(ext) non convertibile (\(lastCodecs.video))")
+                    return
+                }
+                startTranscodedAirPlay(input: url, startTime: currentTime, origin: (nil, currentTime, url))
                 return
             }
         }
         guard tsActive else {
             airPlayAudioOnly = "Sulla TV arriva solo l'audio. "; airPlayNotice = "In AirPlay va solo l'audio: il video passa alla TV con il timeshift attivo"
             log("AirPlay: solo audio, timeshift non attivo")
+            return
+        }
+        if !airPlayCompatible, StreamInfo.airPlayConvertible(video: lastCodecs.video, audio: lastCodecs.audio),
+           let local = TimeshiftManager.shared.localURL(from: TimeshiftManager.shared.buffer.snapToKeyframe(
+                TimeshiftManager.shared.buffer.offset(at: tsPosition))) {
+            // Canale con audio MP2: VLC converte l'audio in AAC leggendo dal buffer del telefono.
+            startTranscodedAirPlay(input: local, startTime: nil, origin: (tsPosition, nil, nil))
             return
         }
         guard airPlayCompatible else {
@@ -973,6 +996,78 @@ final class PlayerController: ObservableObject {
         }
     }
 
+    /// AirPlay con conversione: VLC scrive un TS con audio AAC, il server lo pubblica come HLS che cresce,
+    /// la TV parte quando ci sono i primi spezzoni.
+    private func startTranscodedAirPlay(input: URL, startTime: Double?, origin: (date: Date?, seconds: Double?, url: URL?)) {
+        let converter = AirPlayTranscoder()
+        converter.onState = { [weak self] text in self?.log("AirPlay: \(text)") }
+        guard let output = converter.start(input: input, startTime: startTime) else {
+            airPlayNotice = "Conversione per AirPlay non disponibile"
+            return
+        }
+        let index = GrowingHLS(url: output)
+        converter.onFinish = { [weak self, weak index] ok in
+            index?.finish()
+            if !ok { self?.log("AirPlay: la conversione si e' fermata") }
+        }
+        transcoder = converter
+        transcodeIndex = index
+        transcodeOrigin = origin
+        airPlayActive = true
+        airPlayStarted = Date()
+        isBuffering = true
+        message = "Converto l'audio per l'Apple TV…"
+        log("AirPlay: conversione avviata (audio in AAC)")
+        vlc.stop()
+        Task {
+            _ = await TimeshiftManager.shared.server.start()
+            // Attende i primi spezzoni (fino a 25 s).
+            for _ in 0..<50 {
+                index.update()
+                if index.segmentCount >= 3 || index.finished { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            guard airPlayActive, transcodeIndex === index else { return }
+            guard index.segmentCount > 0,
+                  let url = TimeshiftManager.shared.lanURL(path: TimeshiftManager.shared.server.registerGrowing(index)) else {
+                log("AirPlay: la conversione non produce dati")
+                airPlayNotice = "Conversione per AirPlay non riuscita: torno sul telefono"
+                exitAirPlay()
+                return
+            }
+            message = nil
+            engine = .avplayer
+            let item = AVPlayerItem(url: url)
+            statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+                let status = item.status
+                let text = item.error?.localizedDescription
+                Task { @MainActor in
+                    guard let self, self.airPlayActive else { return }
+                    if status == .readyToPlay {
+                        self.isBuffering = false
+                        // La conversione parte dal punto in cui si era: si guarda dall'inizio della playlist.
+                        self.player.seek(to: .zero)
+                        self.airPlayBase = (self.tsPosition, 0)
+                        self.log("AirPlay: conversione sulla TV dopo \(Int(Date().timeIntervalSince(self.airPlayStarted))) s")
+                    } else if status == .failed {
+                        self.log("AirPlay: errore \(text ?? "")")
+                        self.airPlayNotice = "AirPlay non riuscito: torno sul telefono"
+                        self.exitAirPlay()
+                    }
+                }
+            }
+            player.replaceCurrentItem(with: item)
+            player.play()
+        }
+    }
+
+    private func stopTranscoding() {
+        if let index = transcodeIndex { TimeshiftManager.shared.server.unregisterGrowing(index) }
+        transcoder?.stop()
+        transcoder = nil
+        transcodeIndex = nil
+    }
+
     /// Registrazione .ts in AirPlay: indice degli spezzoni (letto dal file), playlist VOD servita dal telefono.
     private func enterAirPlayRecording(_ url: URL) {
         guard airPlayCompatible else {
@@ -1024,6 +1119,28 @@ final class PlayerController: ObservableObject {
 
     func exitAirPlay() {
         guard airPlayActive else { return }
+        if let origin = transcodeOrigin {
+            // Ritorno da una conversione: si riparte sul telefono dal punto raggiunto sulla TV.
+            let played = player.currentTime().seconds
+            let elapsed = played.isFinite ? played : 0
+            stopTranscoding()
+            transcodeOrigin = nil
+            airPlayActive = false
+            airPlayBase = nil
+            externalObservation = nil
+            statusObservation = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            engine = .vlc
+            log("AirPlay terminato: torno a VLC")
+            if let date = origin.date {
+                seekTimeshift(to: date.addingTimeInterval(elapsed))
+            } else if let url = origin.url {
+                pendingSeek = (origin.seconds ?? 0) + elapsed
+                load(url, forceEngine: .vlc)
+            }
+            return
+        }
         airPlayBase = nil
         externalObservation = nil
         if let file = airPlayFile {
@@ -1049,6 +1166,7 @@ final class PlayerController: ObservableObject {
     }
 
     func stop() {
+        stopTranscoding()
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver); self.routeObserver = nil }
         airPlayActive = false
         // Nel log di sessione resta il bilancio del canale: utile per capire "niente audio" su un canale gia' chiuso.

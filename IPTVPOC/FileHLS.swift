@@ -130,3 +130,149 @@ final class FileHLS: @unchecked Sendable {
         return psi + data
     }
 }
+
+/// Playlist HLS di un file .ts che sta ancora crescendo (uscita della conversione per AirPlay):
+/// a ogni richiesta legge i byte nuovi, aggiunge gli spezzoni completi e, a conversione finita, chiude la playlist.
+final class GrowingHLS: @unchecked Sendable {
+    let url: URL
+    private let lock = NSLock()
+    private let targetSeconds: Double
+    private var segments: [FileHLS.Segment] = []
+    private var psi = Data()
+    private var pat: Data?
+    private var pmtPIDs: Set<Int> = []
+    private var pmts: [Int: Data] = [:]
+    private var pcrPID: Int?
+    private var lastPCR: Double?
+    private var timeline = 0.0
+    private var open: (offset: Int64, time: Double)?
+    private var scanned: Int64 = 0
+    private var finishedValue = false
+
+    init(url: URL, targetSeconds: Double = 2) {
+        self.url = url
+        self.targetSeconds = targetSeconds
+    }
+
+    var segmentCount: Int { lock.lock(); defer { lock.unlock() }; return segments.count }
+    var finished: Bool { lock.lock(); defer { lock.unlock() }; return finishedValue }
+
+    /// La conversione e' finita: l'ultimo pezzo diventa uno spezzone e la playlist si chiude.
+    func finish() {
+        update()
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finishedValue else { return }
+        finishedValue = true
+        if let open, scanned > open.offset {
+            segments.append(FileHLS.Segment(start: open.offset, end: scanned, duration: max(0.5, timeline - open.time)))
+            self.open = nil
+        }
+    }
+
+    /// Legge i byte arrivati dall'ultima volta (solo pacchetti completi).
+    func update() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finishedValue, let handle = try? FileHandle(forReadingFrom: url) else { return }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(scanned))) != nil else { return }
+        while let chunk = try? handle.read(upToCount: 4_194_304), !chunk.isEmpty {
+            let bytes = [UInt8](chunk)
+            var i = 0
+            while i + 188 <= bytes.count {
+                guard bytes[i] == 0x47 else { i += 1; continue }
+                scanPacket(bytes, i, offset: scanned + Int64(i))
+                i += 188
+            }
+            scanned += Int64(i)
+            if i < bytes.count { break } // pacchetto incompleto: si riprende alla prossima lettura
+            guard (try? handle.seek(toOffset: UInt64(scanned))) != nil else { break }
+        }
+    }
+
+    private func scanPacket(_ bytes: [UInt8], _ i: Int, offset: Int64) {
+        let pid = (Int(bytes[i + 1] & 0x1f) << 8) | Int(bytes[i + 2])
+        let adaptation = (bytes[i + 3] >> 4) & 0x3
+        let hasAdaptation = adaptation == 2 || adaptation == 3
+        if (bytes[i + 1] & 0x40) != 0, adaptation == 1 || adaptation == 3 {
+            let start = adaptation == 3 ? i + 5 + Int(bytes[i + 4]) : i + 4
+            if start < i + 188 {
+                let section = start + 1 + Int(bytes[start])
+                if pid == 0, section + 8 < i + 188, bytes[section] == 0x00, pat == nil {
+                    let length = (Int(bytes[section + 1] & 0x0f) << 8) | Int(bytes[section + 2])
+                    let last = min(i + 188, section + 3 + length) - 4
+                    var cursor = section + 8
+                    while cursor + 4 <= last {
+                        let program = (Int(bytes[cursor]) << 8) | Int(bytes[cursor + 1])
+                        if program != 0 { pmtPIDs.insert((Int(bytes[cursor + 2] & 0x1f) << 8) | Int(bytes[cursor + 3])) }
+                        cursor += 4
+                    }
+                    pat = Data(bytes[i..<(i + 188)])
+                } else if pmtPIDs.contains(pid), pmts[pid] == nil {
+                    pmts[pid] = Data(bytes[i..<(i + 188)])
+                    if let pat, pmtPIDs.allSatisfy({ pmts[$0] != nil }) {
+                        psi = pat
+                        for key in pmtPIDs.sorted() { psi.append(pmts[key] ?? Data()) }
+                    }
+                }
+            }
+        }
+        // Inizio di spezzone: fotogramma chiave (random access) sul PID del PCR.
+        if hasAdaptation, bytes[i + 4] >= 1, (bytes[i + 5] & 0x40) != 0, pid == pcrPID {
+            if let open {
+                if timeline - open.time >= targetSeconds && offset > open.offset {
+                    segments.append(FileHLS.Segment(start: open.offset, end: offset, duration: timeline - open.time))
+                    self.open = (offset, timeline)
+                }
+            } else {
+                open = (offset, timeline)
+            }
+        }
+        if hasAdaptation, bytes[i + 4] >= 7, (bytes[i + 5] & 0x10) != 0 {
+            if pcrPID == nil { pcrPID = pid }
+            if pid == pcrPID {
+                var value = UInt64(bytes[i + 6]) << 25
+                value |= UInt64(bytes[i + 7]) << 17
+                value |= UInt64(bytes[i + 8]) << 9
+                value |= UInt64(bytes[i + 9]) << 1
+                value |= UInt64(bytes[i + 10]) >> 7
+                let pcr = Double(value) / 90_000
+                if let previous = lastPCR {
+                    var delta = pcr - previous
+                    if delta < -47_000 { delta += 95_443.717_688_9 }
+                    if delta > 0 && delta < 5 { timeline += delta } else if delta != 0 { timeline += 0.04 }
+                }
+                lastPCR = pcr
+            }
+        }
+    }
+
+    /// Playlist "EVENT": cresce finche' la conversione va avanti, poi si chiude con ENDLIST.
+    func playlist(token: String) -> String {
+        update()
+        lock.lock()
+        defer { lock.unlock() }
+        let target = Int((segments.map(\.duration).max() ?? 4).rounded(.up))
+        var lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-PLAYLIST-TYPE:EVENT",
+                     "#EXT-X-TARGETDURATION:\(max(target, 1))", "#EXT-X-MEDIA-SEQUENCE:0"]
+        for (index, segment) in segments.enumerated() {
+            lines.append(String(format: "#EXTINF:%.3f,", segment.duration))
+            lines.append("seg-\(index).ts?t=\(token)")
+        }
+        if finishedValue { lines.append("#EXT-X-ENDLIST") }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    func segmentData(_ index: Int) -> Data? {
+        lock.lock()
+        let segment = segments.indices.contains(index) ? segments[index] : nil
+        let tables = psi
+        lock.unlock()
+        guard let segment, let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(segment.start))) != nil,
+              let data = try? handle.read(upToCount: Int(segment.end - segment.start)) else { return nil }
+        return tables + data
+    }
+}

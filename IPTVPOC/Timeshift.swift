@@ -724,6 +724,10 @@ final class TimeshiftServer: @unchecked Sendable {
             respondHLS(connection, path: path, isHead: parts.first == "HEAD")
             return
         }
+        if path.hasPrefix("/tx/") {
+            respondGrowing(connection, path: path, isHead: parts.first == "HEAD")
+            return
+        }
         if path.hasPrefix("/rec/") {
             respondRecording(connection, path: path, isHead: parts.first == "HEAD")
             return
@@ -752,6 +756,45 @@ final class TimeshiftServer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let ago = lastHLSRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastHLSRequest))) s fa"
         return "HLS (AirPlay): richieste \(hlsRequests), ultima \(ago), spezzoni nel buffer \(buffer.hlsSegmentCount)"
+    }
+
+    // MARK: Conversioni in corso (canali MP2, film MKV)
+
+    private var growing: [String: GrowingHLS] = [:]
+
+    func registerGrowing(_ index: GrowingHLS) -> String {
+        let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12))
+        lock.lock(); growing[id] = index; lock.unlock()
+        return "/tx/\(id)/play.m3u8"
+    }
+
+    func unregisterGrowing(_ index: GrowingHLS) {
+        lock.lock(); growing = growing.filter { $0.value !== index }; lock.unlock()
+    }
+
+    private func respondGrowing(_ connection: NWConnection, path: String, isHead: Bool) {
+        lock.lock(); hlsRequests += 1; lastHLSRequest = Date(); lock.unlock()
+        let components = path.split(separator: "/").map(String.init)
+        func send(_ status: String, _ type: String, _ body: Data) {
+            var head = "HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\n"
+            head += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n"
+            var payload = Data(head.utf8)
+            if !isHead { payload.append(body) }
+            connection.send(content: payload, completion: .contentProcessed { _ in connection.cancel() })
+        }
+        lock.lock(); let index = components.count == 3 ? growing[components[1]] : nil; lock.unlock()
+        guard let index else { send("404 Not Found", "text/plain", Data()); return }
+        let name = components[2]
+        DispatchQueue.global(qos: .userInitiated).async {
+            if name == "play.m3u8" {
+                send("200 OK", "application/vnd.apple.mpegurl", Data(index.playlist(token: self.token).utf8))
+            } else if name.hasPrefix("seg-"), name.hasSuffix(".ts"), let number = Int(name.dropFirst(4).dropLast(3)),
+                      let data = index.segmentData(number) {
+                send("200 OK", "video/mp2t", data)
+            } else {
+                send("404 Not Found", "text/plain", Data())
+            }
+        }
     }
 
     // MARK: Registrazioni in AirPlay

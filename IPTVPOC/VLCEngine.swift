@@ -214,6 +214,59 @@ final class VLCEngine: NSObject, VLCMediaPlayerDelegate {
         }
     }
 }
+/// Conversione per AirPlay con VLC (moduli di stream output inclusi in MobileVLCKit): l'audio diventa AAC,
+/// il video resta com'e', il contenitore diventa MPEG-TS scritto su un file che il server serve in HLS.
+/// Serve per i canali con audio MP2 e per i film MKV/AVI.
+@MainActor
+final class AirPlayTranscoder: NSObject, VLCMediaPlayerDelegate {
+    private let player = VLCMediaPlayer()
+    private(set) var output: URL?
+    var onFinish: ((Bool) -> Void)?
+    var onState: ((String) -> Void)?
+
+    override init() {
+        super.init()
+        player.delegate = self
+    }
+
+    func start(input: URL, startTime: Double? = nil) -> URL? {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("AirPlay", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("tx-\(UUID().uuidString.prefix(8)).ts")
+        output = file
+        let media = VLCMedia(url: input)
+        var options: [String: Any] = [
+            "sout": "#transcode{acodec=mp4a,ab=192,channels=2,samplerate=48000}:file{dst='\(file.path)',mux=ts}",
+            "sout-keep": "",
+            "network-caching": 1500
+        ]
+        if let startTime, startTime > 1 { options["start-time"] = Int(startTime) }
+        media.addOptions(options)
+        player.media = media
+        player.play()
+        return file
+    }
+
+    func stop() {
+        player.delegate = nil
+        player.stop()
+        if let output { try? FileManager.default.removeItem(at: output) }
+        output = nil
+    }
+
+    nonisolated func mediaPlayerStateChanged(_ aNotification: Notification!) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch self.player.state {
+            case .ended: self.onState?("conversione finita"); self.onFinish?(true)
+            case .error: self.onState?("conversione: errore VLC"); self.onFinish?(false)
+            case .playing: self.onState?("conversione in corso")
+            default: break
+            }
+        }
+    }
+}
+
 #else
 @MainActor
 final class VLCEngine: NSObject {
@@ -244,6 +297,13 @@ final class VLCEngine: NSObject {
     var currentSubtitle: Int32 { -1 }
     func selectAudio(_ id: Int32) {}
     func selectSubtitle(_ id: Int32) {}
+}
+@MainActor
+final class AirPlayTranscoder: NSObject {
+    var onFinish: ((Bool) -> Void)?
+    var onState: ((String) -> Void)?
+    func start(input: URL, startTime: Double? = nil) -> URL? { nil }
+    func stop() {}
 }
 #endif
 

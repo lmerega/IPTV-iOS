@@ -55,6 +55,12 @@ enum StreamInfo {
         return (false, "non compatibile: " + problems.joined(separator: ", ") + " (\(summary))")
     }
 
+    /// Video H.264 con solo audio MP2: si puo' mandare in AirPlay convertendo l'audio in AAC.
+    static func airPlayConvertible(video: [String], audio: [String]) -> Bool {
+        !video.isEmpty && video.allSatisfy { $0 == "H.264" } && !audio.isEmpty
+            && audio.allSatisfy { ["MPEG audio", "AAC", "AC-3", "E-AC-3"].contains($0) }
+    }
+
     static func audioLabel(codec: String, channels: Int, rate: Int) -> String {
         let layout: String
         switch channels {

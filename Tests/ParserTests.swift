@@ -298,6 +298,37 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(index.segmentData(0)?.count ?? 0 > 0, true)
     }
 
+    func testGrowingHLS() throws {
+        func packets(from: Int, to: Int) -> Data {
+            var data = Data()
+            for step in from...to {
+                var packet = [UInt8](pcrPacket(pid: 256, seconds: 10 + Double(step) * 0.5))
+                if step % 2 == 0 { packet[5] |= 0x40 }
+                data.append(Data(packet))
+            }
+            return data
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("grow-\(UUID().uuidString).ts")
+        try packets(from: 0, to: 12).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let index = GrowingHLS(url: url, targetSeconds: 2)
+        index.update()
+        let first = index.segmentCount
+        XCTAssertGreaterThan(first, 0)
+        XCTAssertFalse(index.playlist(token: "x").contains("#EXT-X-ENDLIST"))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: packets(from: 13, to: 30))
+        try handle.close()
+        index.update()
+        XCTAssertGreaterThan(index.segmentCount, first)
+        index.finish()
+        XCTAssertTrue(index.playlist(token: "x").contains("#EXT-X-ENDLIST"))
+        XCTAssertNotNil(index.segmentData(0))
+        XCTAssertTrue(StreamInfo.airPlayConvertible(video: ["H.264"], audio: ["MPEG audio"]))
+        XCTAssertFalse(StreamInfo.airPlayConvertible(video: ["HEVC"], audio: ["MPEG audio"]))
+    }
+
     func testGzip() throws {
         let b64 = "H4sIAAAAAAAC/7MpKbOzKSjKTy9KzM1NVUjOSMzLS82xVUpUUiguSSwqsVUyMjAyMzA0MDIwNjAxMFDQNgACkGR+AZKcCZKcnU1JZklOql2IjT6EYaMPtwDILimzAwBDsZ5qdQAAAA=="
         let gz = try XCTUnwrap(Data(base64Encoded: b64))
