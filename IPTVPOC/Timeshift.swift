@@ -756,12 +756,22 @@ final class TimeshiftServer: @unchecked Sendable {
 
     private var hlsRequests = 0
     private var lastHLSRequest = Date.distantPast
+    private var playlistRequests = 0
+    private var segmentRequests = 0
+    private var lastSegmentName = ""
+    private var lastPlaylistSegments = 0
+
+    private func countRequest(_ name: String) {
+        lock.lock()
+        if name.hasSuffix(".m3u8") { playlistRequests += 1 } else { segmentRequests += 1; lastSegmentName = name }
+        lock.unlock()
+    }
 
     /// Stato AirPlay per il log di diagnostica.
     var hlsDiagnostics: String {
         lock.lock(); defer { lock.unlock() }
         let ago = lastHLSRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastHLSRequest))) s fa"
-        return "HLS (AirPlay): richieste \(hlsRequests), ultima \(ago), spezzoni nel buffer \(buffer.hlsSegmentCount)"
+        return "HLS (AirPlay): richieste \(hlsRequests), ultima \(ago), spezzoni nel buffer \(buffer.hlsSegmentCount); playlist \(playlistRequests), spezzoni chiesti \(segmentRequests), ultimo \(lastSegmentName.isEmpty ? "-" : lastSegmentName), spezzoni nell'ultima playlist convertita \(lastPlaylistSegments)"
     }
 
     // MARK: Conversioni in corso (canali MP2, film MKV)
@@ -791,9 +801,12 @@ final class TimeshiftServer: @unchecked Sendable {
         lock.lock(); let index = components.count == 3 ? growing[components[1]] : nil; lock.unlock()
         guard let index else { send("404 Not Found", "text/plain", Data()); return }
         let name = components[2]
+        countRequest(name)
         DispatchQueue.global(qos: .userInitiated).async {
             if name == "play.m3u8" {
-                send("200 OK", "application/vnd.apple.mpegurl", Data(index.playlist(token: self.token).utf8))
+                let playlist = index.playlist(token: self.token)
+                self.lock.lock(); self.lastPlaylistSegments = index.segmentCount; self.lock.unlock()
+                send("200 OK", "application/vnd.apple.mpegurl", Data(playlist.utf8))
             } else if name.hasPrefix("seg-"), name.hasSuffix(".ts"), let number = Int(name.dropFirst(4).dropLast(3)),
                       let data = index.segmentData(number) {
                 send("200 OK", "video/mp2t", data)
@@ -843,6 +856,7 @@ final class TimeshiftServer: @unchecked Sendable {
     /// Playlist e spezzoni HLS per AirPlay.
     private func respondHLS(_ connection: NWConnection, path: String, isHead: Bool) {
         lock.lock(); hlsRequests += 1; lastHLSRequest = Date(); lock.unlock()
+        countRequest((path as NSString).lastPathComponent)
         func send(_ status: String, _ type: String, _ body: Data) {
             var head = "HTTP/1.1 \(status)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\n"
             head += "Cache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"

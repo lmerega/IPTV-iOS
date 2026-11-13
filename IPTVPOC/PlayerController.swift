@@ -871,7 +871,7 @@ final class PlayerController: ObservableObject {
         }
         let range = player.currentItem?.seekableTimeRanges.last?.timeRangeValue
         let span = range.map { "\(Int($0.start.seconds))-\(Int($0.end.seconds)) s" } ?? "-"
-        log("AirPlay: TV in attesa da \(airPlayWaitingTicks) s (motivo \(reason), tempo \(Int(player.currentTime().seconds)) s, disponibile \(span)); errori: \(errors.isEmpty ? "nessuno" : errors.joined(separator: " | "))")
+        log("AirPlay: TV in attesa da \(airPlayWaitingTicks) s (motivo \(reason), tempo \(Int(player.currentTime().seconds)) s, disponibile \(span)); errori: \(errors.isEmpty ? "nessuno" : errors.joined(separator: " | ")); elemento \(player.currentItem == nil ? "assente" : "presente"); \(TimeshiftManager.shared.server.hlsDiagnostics)")
     }
 
     /// Salto in AirPlay relativo al tempo del player (le date della playlist non risultano affidabili
@@ -981,6 +981,7 @@ final class PlayerController: ObservableObject {
         }
         let position = tsPosition
         log("AirPlay: passo ad AVPlayer, la TV legge la playlist dal telefono")
+        player.actionAtItemEnd = .none
         airPlayActive = true
         airPlayStarted = Date()
         externalObservation = player.observe(\.isExternalPlaybackActive, options: [.new]) { [weak self] player, _ in
@@ -1077,7 +1078,15 @@ final class PlayerController: ObservableObject {
             }
             message = nil
             engine = .avplayer
+            // La playlist cresce: arrivati in fondo si aspetta, non si chiude il player.
+            player.actionAtItemEnd = .none
             let item = AVPlayerItem(url: url)
+            item.preferredForwardBufferDuration = 6
+            if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+            endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item,
+                                                                 queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.log("AirPlay: la TV ha raggiunto la fine della parte convertita") }
+            }
             statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
                 let status = item.status
                 let text = item.error?.localizedDescription
