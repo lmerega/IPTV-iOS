@@ -81,6 +81,8 @@ struct GlobalSearchView: View {
     @State private var movies: [OnDemandItem] = []
     @State private var series: [OnDemandItem] = []
     @State private var preparing = false
+    @State private var chosen: ProgramHit?
+    @ObservedObject private var scheduler = RecordingScheduler.shared
 
     private var channels: [IPTVChannel] {
         guard !query.isEmpty else { return [] }
@@ -88,10 +90,45 @@ struct GlobalSearchView: View {
         return model.visibleChannels.filter { OnDemandCatalog.key($0.name).contains(needle) }.prefix(50).map { $0 }
     }
 
-    /// Programmi gia' noti (ora in onda / a seguire) il cui titolo contiene la ricerca.
+    /// Programmi della guida (fino a 7 giorni) che contengono la ricerca nel titolo o nella descrizione.
     private var programs: [ProgramHit] {
         guard query.count >= 2 else { return [] }
         return model.searchPrograms(query).map { ProgramHit(channel: $0.channel, program: $0.program) }
+    }
+
+    /// "in onda", "oggi 21:00", "domani 21:00" o "sab 16 nov, 21:00".
+    static func when(_ program: GuideProgram) -> String {
+        if program.isLive { return "in onda" }
+        let time = program.start.formatted(date: .omitted, time: .shortened)
+        let calendar = Calendar.current
+        if calendar.isDateInToday(program.start) { return "oggi " + time }
+        if calendar.isDateInTomorrow(program.start) { return "domani " + time }
+        return program.start.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) + ", " + time
+    }
+
+    @ViewBuilder private func programActions(_ hit: ProgramHit) -> some View {
+        let channel = hit.channel, program = hit.program
+        if program.isLive {
+            Button("Guarda in diretta") { model.play(channel) }
+        }
+        if model.canStartOver(program, channel: channel) {
+            Button("Guarda dall'inizio (differita)") { model.playReplay(channel, program) }
+        }
+        if program.end > Date() {
+            if scheduler.isScheduled(program, channel: channel) {
+                Button("Annulla registrazione programmata", role: .destructive) {
+                    if let item = scheduler.items.first(where: { $0.channelID == channel.id && $0.start == program.start }) {
+                        scheduler.cancel(item)
+                    }
+                }
+            } else {
+                Button("Programma registrazione") { scheduler.schedule(program, channel: channel) }
+            }
+        }
+        if !program.isLive {
+            Button("Apri il canale") { model.play(channel) }
+        }
+        Button("Chiudi", role: .cancel) {}
     }
 
     var body: some View {
@@ -99,7 +136,7 @@ struct GlobalSearchView: View {
             List {
                 if query.isEmpty {
                     Section {
-                        Label("Cerca tra canali, programmi in onda e a seguire, film e serie.", systemImage: "magnifyingglass")
+                        Label("Cerca tra canali, programmi dei prossimi giorni, film e serie.", systemImage: "magnifyingglass")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -118,11 +155,18 @@ struct GlobalSearchView: View {
                 if !programHits.isEmpty {
                     Section("Programmi (\(programHits.count))") {
                         ForEach(programHits) { hit in
-                            Button { model.play(hit.channel) } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(hit.program.title).foregroundStyle(.primary)
-                                    Text("\(hit.channel.name) · \(hit.program.isLive ? "in onda" : hit.program.start.formatted(date: .omitted, time: .shortened))")
-                                        .font(.caption).foregroundStyle(.secondary)
+                            Button { chosen = hit } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.program.title).foregroundStyle(.primary)
+                                        Text("\(hit.channel.name) · \(Self.when(hit.program))")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if scheduler.isScheduled(hit.program, channel: hit.channel) {
+                                        Image(systemName: "record.circle").foregroundStyle(.red)
+                                            .accessibilityLabel("Registrazione programmata")
+                                    }
                                 }
                             }
                         }
@@ -148,6 +192,22 @@ struct GlobalSearchView: View {
             }
             .overlay { if preparing { ProgressView("Preparo film e serie…") } }
             .navigationTitle("Cerca")
+            .confirmationDialog(chosen?.program.title ?? "", isPresented: Binding(
+                get: { chosen != nil }, set: { if !$0 { chosen = nil } }), titleVisibility: .visible) {
+                if let hit = chosen { programActions(hit) }
+            } message: {
+                if let hit = chosen {
+                    Text("\(hit.channel.name) · \(hit.program.start.formatted(date: .complete, time: .shortened)) – \(hit.program.end.formatted(date: .omitted, time: .shortened))\(hit.program.description.isEmpty ? "" : "\n\n" + hit.program.description)")
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if model.guideLoading && !query.isEmpty {
+                    Label("Sto scaricando la guida completa: tra poco la ricerca copre anche i prossimi giorni.", systemImage: "arrow.down.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(8).frame(maxWidth: .infinity)
+                        .background(.thinMaterial)
+                }
+            }
             .navigationDestination(for: OnDemandItem.self) { SeriesDetailView(series: $0) }
             .searchable(text: $text, prompt: "Canali, programmi, film, serie")
             .task(id: text) {

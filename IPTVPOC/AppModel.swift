@@ -91,7 +91,11 @@ final class AppModel: ObservableObject {
             case .guide:
                 APICache.invalidate(group: "guide")
                 NowNextStore.shared.clear()
-                if source.kind == "m3u" { await reload() } else { await prefetchGuide(source) }
+                guideLastTry = nil
+                guideTask?.cancel()
+                guideTask = nil
+                startGuideLoad(source, generation: loadGeneration)
+                if source.kind == "xtream" { await prefetchGuide(source) }
                 guideRevision += 1
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "guide.refreshed." + source.id.uuidString)
             case .movies, .series:
@@ -107,9 +111,17 @@ final class AppModel: ObservableObject {
     @Published var catalogDate: Date?
     @Published var playing: PlayRequest?
 
-    private var xmltv: [String: [GuideProgram]] = [:] { didSet { programIndex = nil } }
-    /// Titoli normalizzati della guida XMLTV per la ricerca (costruito alla prima ricerca).
-    private var programIndex: [(key: String, channelID: String, program: GuideProgram)]?
+    private var xmltv: [String: [GuideProgram]] = [:] { didSet { rebuildProgramIndex() } }
+    /// Guida completa (XMLTV): quando e' stata letta e dove finisce, per rinnovarla in tempo.
+    private var guideLoadedAt: Date?
+    private var guideEndsAt: Date?
+    private var guideLastTry: Date?
+    private var guideTask: Task<Void, Never>?
+    /// Guida completa in caricamento (la ricerca lo segnala).
+    @Published private(set) var guideLoading = false
+    /// Titoli e descrizioni normalizzati della guida per la ricerca (preparati in background).
+    private var programIndex = ProgramSearchIndex()
+    private var indexGeneration = 0
     private var loadGeneration = 0
 
     var current: IPTVSource? { profiles.first { $0.id == selectedID } }
@@ -205,7 +217,12 @@ final class AppModel: ObservableObject {
         loadingStep = "Carico i canali…"
         errorMessage = nil
         NowNextStore.shared.clear()
+        guideTask?.cancel()
+        guideTask = nil
+        guideLoading = false
         xmltv = [:]
+        guideLoadedAt = nil
+        guideEndsAt = nil
         defer { if generation == loadGeneration { isLoading = false; loadingStep = nil } }
         do {
             let list = try await IPTVService.loadChannels(source)
@@ -240,26 +257,66 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        // Playlist M3U senza guida impostata: si usa quella indicata nella playlist (url-tvg).
-        // (Xtream usa la guida per canale del server.)
-        var epgAddress = source.epgURL
-        if source.kind == "m3u" && epgAddress.isEmpty { epgAddress = IPTVService.headerGuide(for: source) ?? "" }
         if source.kind == "xtream" { preloadOnDemand(source) }
         RecordingScheduler.shared.check()
-        if source.kind == "m3u" && !epgAddress.isEmpty {
-            loadingStep = "Scarico la guida programmi…"
-            let loaded = await IPTVExtras.loadXMLTV(epgAddress)
-            guard generation == loadGeneration else { return }
-            xmltv = loaded
-            guideRevision += 1
+        loadingStep = nil
+        startGuideLoad(source, generation: generation)
+    }
+
+    /// Indirizzo della guida completa: quello impostato, altrimenti quello della playlist (url-tvg) o,
+    /// per Xtream (se l'opzione e' attiva), xmltv.php del server.
+    private func guideAddress(_ source: IPTVSource) -> String? {
+        if !source.epgURL.trimmingCharacters(in: .whitespaces).isEmpty { return source.epgURL }
+        if source.kind == "m3u" { return IPTVService.headerGuide(for: source) }
+        guard source.fullGuide else { return nil }
+        return (try? IPTVService.xtreamURL(source, path: "/xmltv.php", query: [
+            ("username", source.username), ("password", source.password)]))?.absoluteString
+    }
+
+    /// Scarica e legge la guida completa in background (l'app resta usabile; avanzamento nella striscia).
+    private func startGuideLoad(_ source: IPTVSource, generation: Int, force: Bool = false) {
+        guard let address = guideAddress(source), guideTask == nil else { return }
+        if force, let url = URL(string: address) {
+            try? FileManager.default.removeItem(at: APICache.file(for: url))
         }
+        let ids = Set(channels.compactMap { $0.epgID?.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty })
+        let names = Set(channels.map { IPTVExtras.nameKey($0.name) })
+        guideLoading = true
+        guideLastTry = Date()
+        guideTask = Task { [weak self] in
+            let guide = await IPTVExtras.loadXMLTV(address, wantedIDs: ids, wantedNames: names)
+            guard let self, !Task.isCancelled, generation == self.loadGeneration else { return }
+            self.guideTask = nil
+            self.guideLoading = false
+            guard !guide.isEmpty else { return }
+            self.xmltv = guide.programs
+            self.guideEndsAt = guide.endsAt
+            self.guideLoadedAt = Date()
+            NowNextStore.shared.clear()
+            self.guideRevision += 1
+        }
+    }
+
+    /// Al ritorno in primo piano: guida vecchia di oltre 6 ore o che finisce entro 3 ore -> si riscarica
+    /// (al massimo un tentativo all'ora).
+    func refreshGuideIfStale() {
+        guard let source = current, guideTask == nil, !isLoading, !channels.isEmpty else { return }
+        if let last = guideLastTry, Date().timeIntervalSince(last) < 3600 { return }
+        let old = guideLoadedAt.map { Date().timeIntervalSince($0) > 6 * 3600 } ?? true
+        let runsOut = guideEndsAt.map { $0.timeIntervalSinceNow < 3 * 3600 } ?? false
+        guard old || runsOut else { return }
+        startGuideLoad(source, generation: loadGeneration, force: runsOut && !old)
     }
 
     // MARK: Guida
 
     func loadNowNext(_ channel: IPTVChannel) async {
         guard !NowNextStore.shared.has(channel.id), let source = current else { return }
-        if source.kind == "xtream" {
+        if let list = xmltvPrograms(channel), list.contains(where: { $0.end > Date() }) {
+            // Dalla guida completa, senza richieste al server.
+            let upcoming = list.filter { $0.end > Date() }
+            NowNextStore.shared.set(channel.id, Array(upcoming.prefix(3)))
+        } else if source.kind == "xtream" {
             // La guida puo' arrivare dalla cache (fino a 3 ore): si scartano i programmi gia' finiti.
             let list = await IPTVExtras.shortGuide(source, channel: channel, limit: 6).filter { $0.end > Date() }
             if !Task.isCancelled { NowNextStore.shared.set(channel.id, Array(list.prefix(3))) }
@@ -271,43 +328,66 @@ final class AppModel: ObservableObject {
 
     func guide(for channel: IPTVChannel) async -> [GuideProgram] {
         guard let source = current else { return [] }
-        if source.kind == "xtream" { return await IPTVExtras.fullGuide(source, channel: channel) }
+        if source.kind == "xtream" {
+            // Dal server (sa quali programmi hanno il replay), completata con i giorni successivi della guida completa.
+            let api = await IPTVExtras.fullGuide(source, channel: channel)
+            guard let extra = xmltvPrograms(channel) else { return api }
+            guard let last = api.map({ $0.end }).max() else { return extra }
+            return (api + extra.filter { $0.start >= last }).sorted { $0.start < $1.start }
+        }
         guard let list = xmltvPrograms(channel) else { return [] }
         return list.sorted { $0.start < $1.start }
     }
 
-    /// Programmi non ancora finiti il cui titolo contiene la ricerca: tutta la guida XMLTV (M3U) piu'
-    /// "ora in onda / a seguire" gia' caricati (Xtream).
-    func searchPrograms(_ query: String, limit: Int = 50) -> [(channel: IPTVChannel, program: GuideProgram)] {
-        let needle = OnDemandCatalog.key(query)
+    /// Programmi non ancora finiti che contengono la ricerca nel titolo (prima) o nella descrizione:
+    /// tutta la guida completa (fino a 7 giorni) piu' "ora in onda / a seguire" gia' caricati.
+    func searchPrograms(_ query: String, limit: Int = 200) -> [(channel: IPTVChannel, program: GuideProgram)] {
+        let needle = ProgramSearchIndex.fold(query.trimmingCharacters(in: .whitespaces))
         guard !needle.isEmpty else { return [] }
-        if programIndex == nil && !xmltv.isEmpty {
-            var index: [(key: String, channelID: String, program: GuideProgram)] = []
-            for channel in visibleChannels {
-                for program in xmltvPrograms(channel) ?? [] where program.end > Date() {
-                    index.append((OnDemandCatalog.key(program.title), channel.id, program))
-                }
-            }
-            programIndex = index
-        }
         let now = Date()
         var seen = Set<String>()
-        var result: [(channel: IPTVChannel, program: GuideProgram)] = []
-        func add(_ channelID: String, _ program: GuideProgram) {
+        var inTitle: [(channel: IPTVChannel, program: GuideProgram)] = []
+        var inText: [(channel: IPTVChannel, program: GuideProgram)] = []
+        func add(_ channelID: String, _ program: GuideProgram, title: Bool) {
             guard program.end > now, let channel = channelByID[channelID], !hiddenLive.contains(channel.group),
-                  seen.insert(channelID + "|" + program.id).inserted else { return }
-            result.append((channel, program))
+                  seen.insert(channelID + "|" + String(Int(program.start.timeIntervalSince1970))).inserted else { return }
+            if title { inTitle.append((channel, program)) } else { inText.append((channel, program)) }
         }
-        for entry in programIndex ?? [] where entry.key.contains(needle) { add(entry.channelID, entry.program) }
+        let entries = programIndex.entries
+        for entry in entries where entry.title.contains(needle) { add(entry.channelID, entry.program, title: true) }
         for (id, list) in nowNext {
-            for program in list where OnDemandCatalog.key(program.title).contains(needle) { add(id, program) }
+            for program in list where ProgramSearchIndex.fold(program.title).contains(needle) { add(id, program, title: true) }
         }
-        return Array(result.sorted { $0.program.start < $1.program.start }.prefix(limit))
+        if inTitle.count < limit {
+            for entry in entries where !entry.title.contains(needle) && entry.text.contains(needle) {
+                add(entry.channelID, entry.program, title: false)
+            }
+        }
+        let sorted = inTitle.sorted { $0.program.start < $1.program.start } + inText.sorted { $0.program.start < $1.program.start }
+        return Array(sorted.prefix(limit))
+    }
+
+    /// Prepara l'indice di ricerca della guida in background (titoli e descrizioni normalizzati).
+    private func rebuildProgramIndex() {
+        let guide = xmltv
+        let list = channels.map { (id: $0.id, epg: $0.epgID, name: $0.name) }
+        programIndex = ProgramSearchIndex()
+        indexGeneration += 1
+        let generation = indexGeneration
+        guard !guide.isEmpty else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let index = ProgramSearchIndex.build(guide: guide, channels: list)
+            await MainActor.run {
+                guard let self, self.indexGeneration == generation else { return }
+                self.programIndex = index
+            }
+        }
     }
 
     /// Programmi XMLTV di un canale: per tvg-id, altrimenti per nome.
     private func xmltvPrograms(_ channel: IPTVChannel) -> [GuideProgram]? {
-        if let id = channel.epgID, let list = xmltv[id] { return list }
+        if let id = channel.epgID?.trimmingCharacters(in: .whitespaces).lowercased(), !id.isEmpty,
+           let list = xmltv[id] { return list }
         return xmltv[IPTVExtras.nameKey(channel.name)]
     }
 
@@ -431,7 +511,6 @@ final class AppModel: ObservableObject {
     private func rebuildChannelIndex() {
         let visible = channels.filter { !hiddenLive.contains($0.group) }
         visibleChannels = visible
-        programIndex = nil
         var counts: [String: Int] = [:]
         for channel in visible { counts[channel.group, default: 0] += 1 }
         groupCounts = counts

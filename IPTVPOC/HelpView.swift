@@ -20,6 +20,8 @@ struct HelpView: View {
                   text: "Durante il caricamento una striscia in alto mostra la fase e le barre dei download (canali, film, serie) con i MB ricevuti. Sotto il titolo compare da quanto tempo la lista non viene aggiornata; oltre una settimana l'avviso diventa arancione."),
             Entry(title: "Aggiornare i contenuti",
                   text: "Canali, categorie, film e serie vengono salvati sul telefono, cosi' l'app si apre subito. Quando il provider aggiunge contenuti premi ↻ in Live (canali e guida), Film o Serie (o trascina in basso la lista), oppure in Impostazioni → Contenuti aggiorna una parte alla volta (canali, guida, film, serie) o tutto insieme, con l'avanzamento del download. La guida \"ora in onda\" si rinnova da sola quando i programmi salvati finiscono."),
+            Entry(title: "Guida completa",
+                  text: "Dopo i canali l'app scarica in background tutta la guida programmi (per Xtream il file xmltv.php del server, per M3U quella indicata o quella della playlist), con l'avanzamento nella striscia in alto. Tiene 7 giorni avanti e si rinnova da sola dopo 6 ore o quando sta per finire. Con provider molto grandi il primo download puo' richiedere qualche minuto; si puo' spegnere nella sorgente Xtream (\"Scarica la guida completa\")."),
             Entry(title: "Hai solo un link M3U?",
                   text: "Scegli \"Playlist M3U\" e incolla il link. Se il link contiene get.php con utente e password compare il pulsante \"Converti in sorgente Xtream\": usalo, cosi' avrai anche guida e replay.")
         ]),
@@ -49,7 +51,7 @@ struct HelpView: View {
         ]),
         ("Ricerca", [
             Entry(title: "Cerca ovunque",
-                  text: "La scheda Cerca (lente) cerca insieme canali, programmi (con le playlist M3U tutta la guida, con Xtream quelli in onda e a seguire gia' caricati), film e serie. Ignora maiuscole e accenti. La prima ricerca di film e serie puo' richiedere qualche secondo per preparare i cataloghi.")
+                  text: "La scheda Cerca (lente) cerca insieme canali, programmi della guida (fino a 7 giorni avanti, nel titolo e nella descrizione), film e serie. Tocca un programma per programmarne la registrazione, aprire il canale o vederlo dall'inizio se e' in onda. Ignora maiuscole e accenti. La prima ricerca di film e serie puo' richiedere qualche secondo per preparare i cataloghi.")
         ]),
         ("Guida programmi", [
             Entry(title: "Elenco o griglia",

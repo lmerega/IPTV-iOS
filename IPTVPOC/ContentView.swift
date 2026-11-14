@@ -19,6 +19,7 @@ struct ContentView: View {
             // Al ritorno in primo piano: parte un'eventuale registrazione programmata.
             if phase == .active {
                 RecordingScheduler.shared.check()
+                model.refreshGuideIfStale()
                 // Il server del timeshift puo' essere stato chiuso da iOS mentre l'app era in background.
                 if TimeshiftManager.shared.downloading {
                     Task { _ = await TimeshiftManager.shared.server.start() }

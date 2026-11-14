@@ -386,6 +386,15 @@ struct ProfileEditor: View {
                             Text("MPEG-TS").tag("ts")
                         }
                     }
+                    Section {
+                        Toggle("Scarica la guida completa", isOn: $draft.fullGuide)
+                        TextField("URL guida XMLTV (facoltativo)", text: $draft.epgURL)
+                            .textInputAutocapitalization(.never).keyboardType(.URL).autocorrectionDisabled()
+                    } header: {
+                        Text("Guida programmi")
+                    } footer: {
+                        Text("Scarica in background tutta la guida del server (fino a 7 giorni): serve per cercare un programma dei prossimi giorni e programmarne la registrazione. Si rinnova da sola ogni 6 ore. Lascia vuoto l'URL per usare quella del server.")
+                    }
                 }
                 Section {
                     Button("Salva e carica") {

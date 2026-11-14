@@ -40,6 +40,8 @@ struct IPTVSource: Codable, Identifiable, Equatable {
     var preferHLS = true
     var engine = "auto"
     var hlsSupported: Bool? = nil
+    /// Xtream: scarica la guida completa (xmltv.php) per cercare e vedere i programmi dei prossimi giorni.
+    var fullGuide = true
 
     init() {}
 
@@ -47,7 +49,7 @@ struct IPTVSource: Codable, Identifiable, Equatable {
         case id, name, kind, server, username, password, playlist, epgURL
         // "liveFormat": dalla 1.0 la scelta "HLS (m3u8)" resta salvata (prima tornava ad "Automatico").
         case streamFormat = "liveFormat"
-        case archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS, engine, hlsSupported
+        case archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS, engine, hlsSupported, fullGuide
     }
 
     private enum LegacyKeys: String, CodingKey { case streamFormat }
@@ -74,6 +76,7 @@ struct IPTVSource: Codable, Identifiable, Equatable {
         preferHLS = (try? c.decode(Bool.self, forKey: .preferHLS)) ?? true
         engine = (try? c.decode(String.self, forKey: .engine)) ?? "auto"
         hlsSupported = try? c.decodeIfPresent(Bool.self, forKey: .hlsSupported)
+        fullGuide = (try? c.decode(Bool.self, forKey: .fullGuide)) ?? true
     }
 
     var rawAddress: String { kind == "xtream" ? server : playlist }

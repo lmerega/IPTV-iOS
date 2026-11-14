@@ -161,6 +161,38 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(IPTVService.parseM3U(loose, base: nil).count, 1)
     }
 
+    func testFullGuideFilterSevenDaysAndSearch() {
+        let soon = Date().addingTimeInterval(6 * 86400)
+        let xml = """
+        <tv><channel id="RAI1.it"><display-name>Rai 1 HD</display-name></channel>
+        <channel id="altro"><display-name>Altro</display-name></channel>
+        <channel id="byname"><display-name>Canale Cinque</display-name></channel>
+        <programme channel="RAI1.it" start="\(stamp(soon))" stop="\(stamp(soon.addingTimeInterval(3600)))"><title>Il Commissario</title><desc>Una puntata con Montalbano</desc></programme>
+        <programme channel="altro" start="\(stamp(soon))" stop="\(stamp(soon.addingTimeInterval(3600)))"><title>Escluso</title></programme>
+        <programme channel="byname" start="\(stamp(Date()))" stop="\(stamp(Date().addingTimeInterval(1800)))"><title>Tg</title></programme>
+        </tv>
+        """
+        let guide = IPTVExtras.parseXMLTV(Data(xml.utf8), wantedIDs: ["rai1.it"],
+                                          wantedNames: [IPTVExtras.nameKey("Canale 5 Cinque")])
+        XCTAssertEqual(guide.programs["rai1.it"]?.count, 1)        // 6 giorni avanti: tenuto
+        XCTAssertNil(guide.programs["altro"])                       // canale non in lista: scartato
+        XCTAssertNil(guide.programs["byname"])                      // nome diverso: scartato
+        let named = IPTVExtras.parseXMLTV(Data(xml.utf8), wantedIDs: [], wantedNames: [IPTVExtras.nameKey("Canale Cinque")])
+        XCTAssertEqual(named.programs["byname"]?.count, 1)
+        XCTAssertNotNil(guide.endsAt)
+
+        let channels: [(id: String, epg: String?, name: String)] = [(id: "x1", epg: "RAI1.it", name: "Rai 1")]
+        let index = ProgramSearchIndex.build(guide: guide.programs, channels: channels)
+        XCTAssertEqual(index.entries.count, 1)
+        XCTAssertTrue(index.entries[0].text.contains(ProgramSearchIndex.fold("MONTALBANO")))
+        XCTAssertTrue(index.entries[0].title.contains(ProgramSearchIndex.fold("commissario")))
+    }
+
+    func testXMLTVRefusesEntities() {
+        let xml = "<?xml version=\"1.0\"?><!DOCTYPE tv [<!ENTITY a \"aaaa\">]><tv></tv>"
+        XCTAssertTrue(IPTVExtras.parseXMLTV(Data(xml.utf8)).isEmpty)
+    }
+
     func testXMLTVDisplayNames() throws {
         let xml = """
         <tv><channel id="x1"><display-name>Rai 1</display-name></channel>
