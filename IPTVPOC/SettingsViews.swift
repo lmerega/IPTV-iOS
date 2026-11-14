@@ -248,7 +248,7 @@ struct SettingsView: View {
                             APICache.clear()
                             cacheBytes = APICache.totalBytes
                         }
-                        Text("Canali, categorie, film e serie vengono salvati sul telefono: all'avvio si aprono subito, senza riscaricarli. Aggiorna una parte alla volta con ↻ oppure tutto insieme; durante il download compare l'avanzamento. La guida "ora in onda" si rinnova da sola quando i programmi salvati finiscono. Se il server non risponde viene usata l'ultima copia salvata.")
+                        Text("Canali, categorie, film e serie vengono salvati sul telefono: all'avvio si aprono subito, senza riscaricarli. Aggiorna una parte alla volta con ↻ oppure tutto insieme; durante il download compare l'avanzamento. La guida “ora in onda” si rinnova da sola quando i programmi salvati finiscono. Se il server non risponde viene usata l'ultima copia salvata.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .onAppear { cacheBytes = APICache.totalBytes }
