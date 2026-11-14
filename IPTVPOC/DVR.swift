@@ -62,7 +62,15 @@ final class DVRManager: ObservableObject {
 
     private var directory: URL {
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return root.appendingPathComponent("Recordings", isDirectory: true)
+        var folder = root.appendingPathComponent("Recordings", isDirectory: true)
+        // Le registrazioni possono pesare decine di GB: fuori dal backup iCloud/computer.
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if (try? folder.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup) != true {
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? folder.setResourceValues(values)
+        }
+        return folder
     }
 
     init() {

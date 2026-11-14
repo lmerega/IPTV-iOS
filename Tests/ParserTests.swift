@@ -76,6 +76,85 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "http://example.invalid/c?s=1767323040&d=600&y=2026")
     }
 
+    func testM3UTemplateVariants() {
+        var source = IPTVSource()
+        source.serverTimeZone = "UTC"
+        let start = Date(timeIntervalSince1970: 1_767_323_040)
+        let now = start.addingTimeInterval(3600)
+        func make(_ url: String, template: String? = nil, mode: String? = nil) -> URL? {
+            let ch = IPTVChannel(id: "m1", name: "C", group: "g", url: URL(string: url)!, streamID: nil, archive: true,
+                                 archiveTemplate: template, archiveMode: mode)
+            return CatchupResolver.url(variant: .auto, source: source, channel: ch, start: start, duration: 600, now: now)
+        }
+        // ${...} senza $ residui, formati con argomento, durata in minuti
+        XCTAssertEqual(make("http://h.invalid/l.ts", template: "http://h.invalid/a?s=${start}&e=${end}&d={duration:60}&t={utc:Y-m-d-H-M}")?.absoluteString,
+                       "http://h.invalid/a?s=1767323040&e=1767323640&d=10&t=2026-01-02-03-04")
+        // modello che inizia con ? : si aggiunge alla query del canale (token)
+        XCTAssertEqual(make("http://h.invalid/l.ts?token=abc", template: "?utc={utc}&lutc={lutc}")?.absoluteString,
+                       "http://h.invalid/l.ts?token=abc&utc=1767323040&lutc=1767326640")
+        // append
+        XCTAssertEqual(make("http://h.invalid/l.ts", template: "?start={utc}", mode: "append")?.absoluteString,
+                       "http://h.invalid/l.ts?start=1767323040")
+        // modello relativo: conserva il token del canale
+        XCTAssertEqual(make("http://h.invalid/ch/index.m3u8?token=abc", template: "archive-{utc}-600.m3u8")?.absoluteString,
+                       "http://h.invalid/ch/archive-1767323040-600.m3u8?token=abc")
+        // xc senza modello
+        XCTAssertEqual(make("http://h.invalid:8080/live/u/p/42.ts", mode: "xc")?.absoluteString,
+                       "http://h.invalid:8080/timeshift/u/p/10/2026-01-02:03-04/42.ts")
+        // flussonic
+        XCTAssertEqual(make("http://h.invalid/ch/index.m3u8?token=x", mode: "flussonic")?.absoluteString,
+                       "http://h.invalid/ch/index-1767323040-600.m3u8?token=x")
+        XCTAssertEqual(make("http://h.invalid/ch/mpegts?token=x", mode: "flussonic")?.absoluteString,
+                       "http://h.invalid/ch/timeshift_abs-1767323040.ts?token=x")
+        // shift
+        XCTAssertEqual(make("http://h.invalid/l.ts?a=1", mode: "shift")?.absoluteString,
+                       "http://h.invalid/l.ts?a=1&utc=1767323040&lutc=1767326640")
+    }
+
+    func testM3UHeaderGuideAndStableIDs() {
+        let one = "#EXTM3U url-tvg=\"http://g.invalid/epg.xml.gz,http://g.invalid/b.xml\"\n#EXTINF:-1 tvg-id=\"uno.it\",Uno\nhttp://h.invalid/1.ts?token=AAA\n#EXTINF:-1,Due\nhttp://h.invalid/2.ts?token=AAA\n"
+        let two = one.replacingOccurrences(of: "AAA", with: "BBB")
+        XCTAssertEqual(IPTVService.guideURL(inM3U: one), "http://g.invalid/epg.xml.gz")
+        let a = IPTVService.parseM3U(one, base: nil)
+        let b = IPTVService.parseM3U(two, base: nil)
+        XCTAssertEqual(a.map(\.id), b.map(\.id))
+        XCTAssertNotNil(a[0].legacyID)
+        XCTAssertEqual(IPTVExtras.nameKey("Rai 1 HD"), IPTVExtras.nameKey("RAI 1"))
+    }
+
+    func testM3USkipsOnDemandAndRedactsCredentials() {
+        let text = "#EXTM3U\n#EXTINF:-1,Live\nhttp://h.invalid/u/p/1.ts\n#EXTINF:-1,Film\nhttp://h.invalid/movie/u/p/2.mkv\n"
+        XCTAssertEqual(IPTVService.parseM3U(text, base: nil).map(\.name), ["Live"])
+        MediaRef.credentials = (user: "u", pass: "p")
+        defer { MediaRef.credentials = nil }
+        let media = MediaRef(id: "movie-2", kind: "movie", title: "Film", cover: nil,
+                             url: URL(string: "http://h.invalid/movie/u/p/2.mkv")!)
+        let data = try! JSONEncoder().encode(media)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("/u/p/"))
+        XCTAssertEqual(try! JSONDecoder().decode(MediaRef.self, from: data).url.absoluteString, "http://h.invalid/movie/u/p/2.mkv")
+    }
+
+    func testXMLTVDisplayNames() throws {
+        let xml = """
+        <tv><channel id="x1"><display-name>Rai 1</display-name></channel>
+        <programme channel="x1" start="\(stamp(Date()))" stop="\(stamp(Date().addingTimeInterval(3600)))"><title>T</title></programme></tv>
+        """
+        let parser = XMLTVParser()
+        let p = XMLParser(data: Data(xml.utf8))
+        p.delegate = parser
+        XCTAssertTrue(p.parse())
+        XCTAssertEqual(parser.names["Rai 1"], "x1")
+        XCTAssertEqual(parser.programs["x1"]?.count, 1)
+    }
+
+    private func stamp(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "yyyyMMddHHmmss +0000"
+        return f.string(from: date)
+    }
+
     func testHLSConversion() {
         let text = "#EXTM3U\n#EXTINF:-1,Uno\nhttp://example.invalid:80/live/u/p/123.ts\n#EXTINF:-1,Due\nhttp://example.invalid/stream/abc.ts\n"
         let list = IPTVService.parseM3U(text, base: nil, preferHLS: true)
@@ -219,7 +298,7 @@ final class ParserTests: XCTestCase {
     @MainActor
     func testWatchHistoryResumeAndFinish() {
         let history = WatchHistory.shared
-        history.use(profile: UUID())
+        history.use(source: IPTVSource())
         let url = URL(string: "http://example.invalid/movie/1.mp4")!
         let movie = MediaRef(id: "movie-test", kind: "movie", title: "Film", cover: nil, url: url)
         history.record(movie, position: 600, duration: 6000)

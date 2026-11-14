@@ -139,7 +139,7 @@ struct HelpView: View {
             Entry(title: "Converti flussi .ts in HLS",
                   text: "Solo per M3U: prova la versione .m3u8 dei canali e torna al .ts se non funziona."),
             Entry(title: "URL EPG XMLTV",
-                  text: "Solo per M3U: l'indirizzo della guida programmi. Accetta anche file compressi .gz.")
+                  text: "Solo per M3U: l'indirizzo della guida programmi. Accetta anche file compressi .gz. Se lo lasci vuoto si usa la guida indicata nella playlist (url-tvg), quando c'e'. I canali si abbinano alla guida per tvg-id e, se manca, per nome. Replay: l'app legge da sola i formati catchup della playlist (default, append, shift, flussonic, xc). Film e serie presenti nella playlist non compaiono tra i canali.")
         ]),
         ("AirPlay", [
             Entry(title: "Come si usa",

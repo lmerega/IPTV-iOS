@@ -20,6 +20,8 @@ struct IPTVChannel: Identifiable, Hashable {
     var archiveMode: String? = nil
     var archiveDays: Int = 0
     var altURL: URL? = nil
+    /// Identificativo usato dalle versioni precedenti (M3U), per non perdere preferiti e recenti.
+    var legacyID: String? = nil
 }
 
 struct IPTVSource: Codable, Identifiable, Equatable {
@@ -43,8 +45,12 @@ struct IPTVSource: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, server, username, password, playlist, epgURL
-        case streamFormat, archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS, engine, hlsSupported
+        // "liveFormat": dalla 0.9 la scelta "HLS (m3u8)" resta salvata (prima tornava ad "Automatico").
+        case streamFormat = "liveFormat"
+        case archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS, engine, hlsSupported
     }
+
+    private enum LegacyKeys: String, CodingKey { case streamFormat }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -56,8 +62,12 @@ struct IPTVSource: Codable, Identifiable, Equatable {
         password = (try? c.decode(String.self, forKey: .password)) ?? ""
         playlist = (try? c.decode(String.self, forKey: .playlist)) ?? ""
         epgURL = (try? c.decode(String.self, forKey: .epgURL)) ?? ""
-        let storedFormat = (try? c.decode(String.self, forKey: .streamFormat)) ?? "auto"
-        streamFormat = storedFormat == "m3u8" ? "auto" : storedFormat
+        if let format = try? c.decode(String.self, forKey: .streamFormat) {
+            streamFormat = format
+        } else {
+            let legacy = try? decoder.container(keyedBy: LegacyKeys.self).decode(String.self, forKey: .streamFormat)
+            streamFormat = legacy == nil || legacy == "m3u8" ? "auto" : legacy!
+        }
         archiveShiftMinutes = (try? c.decode(Int.self, forKey: .archiveShiftMinutes)) ?? 0
         catchupVariant = (try? c.decode(String.self, forKey: .catchupVariant)) ?? "auto"
         serverTimeZone = (try? c.decode(String.self, forKey: .serverTimeZone)) ?? ""

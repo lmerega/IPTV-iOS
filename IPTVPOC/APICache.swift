@@ -101,12 +101,19 @@ enum APICache {
     }
 
     static func write(_ url: URL, data: Data) {
-        try? data.write(to: file(for: url), options: .atomic)
+        // Protetto quando il telefono e' bloccato (puo' contenere dati dell'account); se serve leggerlo
+        // a telefono bloccato si riscarica.
+        try? data.write(to: file(for: url), options: [.atomic, .completeFileProtectionUnlessOpen])
     }
 
     static var totalBytes: Int64 {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.fileSizeKey])) ?? []
         return files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
+    /// Elimina le copie salvate di una sorgente (usata quando la si rimuove).
+    static func remove(urls: [URL]) {
+        for url in urls { try? FileManager.default.removeItem(at: file(for: url)) }
     }
 
     static func clear() {

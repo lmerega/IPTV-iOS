@@ -137,9 +137,24 @@ enum IPTVExtras {
             let parser = XMLTVParser()
             let xmlParser = XMLParser(data: xml)
             xmlParser.delegate = parser
-            guard xmlParser.parse() else { return parser.programs }
-            return parser.programs
+            _ = xmlParser.parse()
+            // Anche per nome del canale (normalizzato): serve alle playlist senza tvg-id o con id diversi.
+            var result = parser.programs
+            for (name, id) in parser.names where result[nameKey(name)] == nil {
+                if let list = parser.programs[id] { result[nameKey(name)] = list }
+            }
+            return result
         }.value
+    }
+
+    /// Chiave per abbinare un canale alla guida per nome: minuscolo, solo lettere e cifre, senza HD/FHD/UHD/4K finale.
+    static func nameKey(_ name: String) -> String {
+        var text = name.lowercased().filter { $0.isLetter || $0.isNumber }
+        for suffix in ["fhd", "uhd", "hd", "4k", "sd"] where text.hasSuffix(suffix) && text.count > suffix.count + 1 {
+            text.removeLast(suffix.count)
+            break
+        }
+        return "name:" + text
     }
 
     /// Decomprime un file .gz (header gzip + deflate grezzo). Restituisce nil se non e' gzip.
@@ -169,6 +184,11 @@ enum IPTVExtras {
 
 final class XMLTVParser: NSObject, XMLParserDelegate {
     private(set) var programs: [String: [GuideProgram]] = [:]
+    /// Nomi visualizzati dei canali della guida -> id del canale.
+    private(set) var names: [String: String] = [:]
+    private var channelTag = ""
+    private var displayName = ""
+    private var inDisplayName = false
     private let lowerBound = Date().addingTimeInterval(-8 * 86400)
     private let upperBound = Date().addingTimeInterval(3 * 86400)
     private let zoned: DateFormatter
@@ -199,7 +219,12 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                 qualifiedName: String?, attributes: [String: String] = [:]) {
-        if name == "programme" {
+        if name == "channel" {
+            channelTag = attributes["id"] ?? ""
+        } else if name == "display-name" && !channelTag.isEmpty {
+            inDisplayName = true
+            displayName = ""
+        } else if name == "programme" {
             inside = true
             channel = attributes["channel"] ?? ""
             title = ""; detail = ""
@@ -211,12 +236,20 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if inDisplayName { displayName += string; return }
         guard inside else { return }
         if field == "title" { title += string }
         if field == "desc" { detail += string }
     }
 
     func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        if name == "display-name" && inDisplayName {
+            inDisplayName = false
+            let clean = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clean.isEmpty && names[clean] == nil { names[clean] = channelTag }
+            return
+        }
+        if name == "channel" { channelTag = ""; return }
         if name == "title" || name == "desc" { field = "" }
         guard name == "programme" else { return }
         defer { inside = false }

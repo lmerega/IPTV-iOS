@@ -121,8 +121,8 @@ final class AppModel: ObservableObject {
             selectedID = profiles.first?.id
         }
         loadFavorites()
-        WatchHistory.shared.use(profile: selectedID)
-        RecordingScheduler.shared.channelLookup = { [weak self] id in self?.channels.first { $0.id == id } }
+        WatchHistory.shared.use(source: current)
+        RecordingScheduler.shared.channelLookup = { [weak self] id in self?.channelByID[id] }
         RecordingScheduler.shared.canStart = { [weak self] item, channel in self?.canStartScheduled(item, channel) ?? true }
         Task { await reload() }
     }
@@ -146,7 +146,19 @@ final class AppModel: ObservableObject {
     func remove(_ profile: IPTVSource) {
         profiles.removeAll { $0.id == profile.id }
         persist()
-        UserDefaults.standard.removeObject(forKey: "favorites." + profile.id.uuidString)
+        // Via anche i dati legati alla sorgente: preferiti, recenti, categorie nascoste, visioni, cache.
+        let id = profile.id.uuidString
+        let defaults = UserDefaults.standard
+        for name in ["favorites", "recents", "hidden.live", "hidden.movies", "hidden.series",
+                     "watch.entries", "watch.done", "guide.refreshed"] {
+            defaults.removeObject(forKey: name + "." + id)
+        }
+        if profile.kind == "m3u" {
+            APICache.remove(urls: [profile.playlist, profile.epgURL].compactMap { try? IPTVService.baseURL($0) })
+        } else {
+            APICache.invalidateAll()
+            try? FileManager.default.removeItem(at: APICache.directory)
+        }
         if selectedID == profile.id { select(profiles.first) }
     }
 
@@ -156,7 +168,7 @@ final class AppModel: ObservableObject {
         channels = []
         account = nil
         loadFavorites()
-        WatchHistory.shared.use(profile: selectedID)
+        WatchHistory.shared.use(source: current)
         Task { await reload() }
     }
 
@@ -210,6 +222,8 @@ final class AppModel: ObservableObject {
             mutateCurrent { $0.hlsSupported = hls }
             if !hls { channels = IPTVService.applyFormat(channels, hls: false) }
         }
+        // Promemoria della firma dell'app per ogni sorgente (per Xtream si aggiunge sotto quello dell'abbonamento).
+        if source.kind != "xtream" { Expiry.scheduleReminders(subscription: nil) }
         if source.kind == "xtream" {
             loadingStep = "Leggo lo stato dell'account…"
             if let info = await IPTVService.accountInfo(source) {
@@ -220,10 +234,12 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        let epgAddress = source.epgURL.isEmpty && source.kind == "xtream"
+        var epgAddress = source.epgURL.isEmpty && source.kind == "xtream"
             ? (try? IPTVService.xtreamURL(source, path: "/xmltv.php", query: [
                 ("username", source.username), ("password", source.password)]).absoluteString) ?? ""
             : source.epgURL
+        // Playlist M3U senza guida impostata: si usa quella indicata nella playlist (url-tvg).
+        if source.kind == "m3u" && epgAddress.isEmpty { epgAddress = IPTVService.headerGuide(for: source) ?? "" }
         if source.kind == "xtream" { preloadOnDemand(source) }
         RecordingScheduler.shared.check()
         if source.kind == "m3u" && !epgAddress.isEmpty {
@@ -243,7 +259,7 @@ final class AppModel: ObservableObject {
             // La guida puo' arrivare dalla cache (fino a 3 ore): si scartano i programmi gia' finiti.
             let list = await IPTVExtras.shortGuide(source, channel: channel, limit: 6).filter { $0.end > Date() }
             if !Task.isCancelled { NowNextStore.shared.set(channel.id, Array(list.prefix(3))) }
-        } else if let id = channel.epgID, let list = xmltv[id] {
+        } else if let list = xmltvPrograms(channel) {
             let upcoming = list.filter { $0.end > Date() }.sorted { $0.start < $1.start }
             NowNextStore.shared.set(channel.id, Array(upcoming.prefix(3)))
         }
@@ -252,8 +268,14 @@ final class AppModel: ObservableObject {
     func guide(for channel: IPTVChannel) async -> [GuideProgram] {
         guard let source = current else { return [] }
         if source.kind == "xtream" { return await IPTVExtras.fullGuide(source, channel: channel) }
-        guard let id = channel.epgID, let list = xmltv[id] else { return [] }
+        guard let list = xmltvPrograms(channel) else { return [] }
         return list.sorted { $0.start < $1.start }
+    }
+
+    /// Programmi XMLTV di un canale: per tvg-id, altrimenti per nome.
+    private func xmltvPrograms(_ channel: IPTVChannel) -> [GuideProgram]? {
+        if let id = channel.epgID, let list = xmltv[id] { return list }
+        return xmltv[IPTVExtras.nameKey(channel.name)]
     }
 
     func canReplay(_ program: GuideProgram, channel: IPTVChannel) -> Bool {
@@ -380,7 +402,36 @@ final class AppModel: ObservableObject {
         for channel in visible { counts[channel.group, default: 0] += 1 }
         groupCounts = counts
         liveGroups = counts.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-        channelByID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var index = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Id delle versioni precedenti (playlist M3U): restano validi per registrazioni programmate e cronologia,
+        // mentre preferiti e recenti passano al nuovo id.
+        var renamed: [String: String] = [:]
+        for channel in channels {
+            if let old = channel.legacyID, index[old] == nil { index[old] = channel; renamed[old] = channel.id }
+        }
+        channelByID = index
+        if !renamed.isEmpty { migrateIDs(renamed) }
+    }
+
+    private func migrateIDs(_ renamed: [String: String]) {
+        guard selectedID != nil else { return }
+        func convert(_ list: [String]) -> [String] {
+            var seen = Set<String>()
+            return list.map { renamed[$0] ?? $0 }.filter { seen.insert($0).inserted }
+        }
+        let newFavorites = convert(favoriteOrder)
+        if newFavorites != favoriteOrder {
+            favoriteOrder = newFavorites
+            favorites = Set(newFavorites)
+            UserDefaults.standard.set(favoriteOrder, forKey: key("favorites"))
+        }
+        let newRecents = convert(recents)
+        if newRecents != recents {
+            recents = newRecents
+            UserDefaults.standard.set(recents, forKey: key("recents"))
+        }
+        if let current = currentChannelID, let id = renamed[current] { currentChannelID = id }
+        if let previous = previousChannelID, let id = renamed[previous] { previousChannelID = id }
     }
 
     /// Programma in onda su un canale con archivio: si puo' guardare dall'inizio in differita.

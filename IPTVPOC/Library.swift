@@ -20,6 +20,82 @@ struct MediaRef: Codable, Hashable {
         guard kind == "episode", let seriesTitle else { return title }
         return "\(seriesTitle) · S\(season) E\(episode)"
     }
+
+    init(id: String, kind: String, title: String, cover: String?, url: URL, seriesID: Int? = nil,
+         seriesTitle: String? = nil, season: Int = 0, episode: Int = 0) {
+        self.id = id; self.kind = kind; self.title = title; self.cover = cover; self.url = url
+        self.seriesID = seriesID; self.seriesTitle = seriesTitle; self.season = season; self.episode = episode
+    }
+
+    // Su disco l'indirizzo si salva senza utente e password della sorgente: si rimettono quando si legge.
+    private enum Keys: String, CodingKey { case id, kind, title, cover, url, seriesID, seriesTitle, season, episode }
+    private static let userMark = "~user~"
+    private static let passMark = "~pass~"
+    /// Credenziali della sorgente in uso (impostate da WatchHistory.use).
+    nonisolated(unsafe) static var credentials: (user: String, pass: String)?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(String.self, forKey: .kind)
+        title = try c.decode(String.self, forKey: .title)
+        cover = try c.decodeIfPresent(String.self, forKey: .cover)
+        let stored = try c.decode(String.self, forKey: .url)
+        guard let url = URL(string: MediaRef.restore(stored)) else {
+            throw DecodingError.dataCorruptedError(forKey: .url, in: c, debugDescription: "url")
+        }
+        self.url = url
+        seriesID = try c.decodeIfPresent(Int.self, forKey: .seriesID)
+        seriesTitle = try c.decodeIfPresent(String.self, forKey: .seriesTitle)
+        season = try c.decodeIfPresent(Int.self, forKey: .season) ?? 0
+        episode = try c.decodeIfPresent(Int.self, forKey: .episode) ?? 0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(cover, forKey: .cover)
+        try c.encode(MediaRef.redact(url), forKey: .url)
+        try c.encodeIfPresent(seriesID, forKey: .seriesID)
+        try c.encodeIfPresent(seriesTitle, forKey: .seriesTitle)
+        try c.encode(season, forKey: .season)
+        try c.encode(episode, forKey: .episode)
+    }
+
+    /// Toglie utente e password (percorso Xtream /tipo/utente/password/... e parametri username/password).
+    static func redact(_ url: URL) -> String {
+        guard let creds = credentials, !creds.user.isEmpty,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        var comps = parts.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        let user = creds.user.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? creds.user
+        let pass = creds.pass.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? creds.pass
+        for i in comps.indices.dropLast() where (comps[i] == user || comps[i] == creds.user)
+            && (comps[i + 1] == pass || comps[i + 1] == creds.pass) {
+            comps[i] = userMark
+            comps[i + 1] = passMark
+            break
+        }
+        parts.percentEncodedPath = comps.joined(separator: "/")
+        if let items = parts.queryItems {
+            parts.queryItems = items.map { item in
+                switch item.name {
+                case "username" where item.value == creds.user: return URLQueryItem(name: item.name, value: userMark)
+                case "password" where item.value == creds.pass: return URLQueryItem(name: item.name, value: passMark)
+                default: return item
+                }
+            }
+        }
+        return parts.string ?? url.absoluteString
+    }
+
+    static func restore(_ text: String) -> String {
+        guard text.contains(userMark) || text.contains(passMark), let creds = credentials else { return text }
+        let user = creds.user.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? creds.user
+        let pass = creds.pass.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? creds.pass
+        return text.replacingOccurrences(of: userMark, with: user).replacingOccurrences(of: passMark, with: pass)
+    }
 }
 
 /// Punto di visione salvato.
@@ -43,8 +119,9 @@ final class WatchHistory: ObservableObject {
     /// Da qui in poi un contenuto si considera visto.
     static let finishedFraction = 0.93
 
-    func use(profile: UUID?) {
-        let id = profile?.uuidString ?? ""
+    func use(source: IPTVSource?) {
+        let id = source?.id.uuidString ?? ""
+        MediaRef.credentials = source.map { (user: $0.username, pass: $0.password) }
         guard id != profileID else { return }
         profileID = id
         let defaults = UserDefaults.standard

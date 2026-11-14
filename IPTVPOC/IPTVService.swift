@@ -179,6 +179,7 @@ enum IPTVService {
         let body = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
         let channels = parseM3U(body, base: playlist, preferHLS: source.preferHLS && source.hlsSupported != false)
         if channels.isEmpty { throw IPTVError.noChannels }
+        headerGuideLock.lock(); headerGuides[source.id] = guideURL(inM3U: body); headerGuideLock.unlock()
         return channels
     }
 
@@ -199,6 +200,29 @@ enum IPTVService {
         guard last.hasSuffix(".ts"), Int(last.dropLast(3)) != nil,
               url.pathComponents.count >= 4 else { return nil }
         return url.deletingPathExtension().appendingPathExtension("m3u8")
+    }
+
+    private static var headerGuides: [UUID: String] = [:]
+    private static let headerGuideLock = NSLock()
+
+    /// Guida XMLTV indicata nell'intestazione della playlist (url-tvg / x-tvg-url), se c'e'.
+    static func headerGuide(for source: IPTVSource) -> String? {
+        headerGuideLock.lock(); defer { headerGuideLock.unlock() }
+        return headerGuides[source.id]
+    }
+
+    /// Primo indirizzo XMLTV dell'intestazione #EXTM3U (se ce ne sono piu' d'uno, separati da virgola).
+    static func guideURL(inM3U body: String) -> String? {
+        guard let header = body.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("#EXTM3U") }) else { return nil }
+        let line = String(header)
+        for name in ["url-tvg", "x-tvg-url", "tvg-url"] {
+            if let value = attribute(name, in: line),
+               let first = value.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }),
+               URL(string: first)?.scheme?.hasPrefix("http") == true {
+                return first
+            }
+        }
+        return nil
     }
 
     static func parseM3U(_ body: String, base: URL?, preferHLS: Bool = false) -> [IPTVChannel] {
@@ -223,21 +247,36 @@ enum IPTVService {
             } else if !line.isEmpty && !line.hasPrefix("#"),
                       let address = URL(string: line, relativeTo: base)?.absoluteURL,
                       ["http", "https"].contains(address.scheme?.lowercased() ?? "") {
+                // Film e serie delle playlist "m3u_plus" dei pannelli Xtream non sono canali: si saltano.
+                if isOnDemand(address) { meta = Meta(); continue }
                 let name = meta.name.isEmpty ? "Canale \(channels.count + 1)" : meta.name
-                var id = "m" + stableHash(address.absoluteString + "|" + name)
+                // Id stabile anche se il token nell'indirizzo cambia: tvg-id + nome, altrimenti nome + server e percorso.
+                let tvg = (meta.epgID ?? "").trimmingCharacters(in: .whitespaces)
+                let key = tvg.isEmpty
+                    ? name + "|" + (address.host ?? "") + address.path
+                    : "tvg|" + tvg + "|" + name
+                var id = "m" + stableHash(key)
                 var n = 1
-                while used.contains(id) { n += 1; id = "m" + stableHash(address.absoluteString + "|" + name) + "-\(n)" }
+                while used.contains(id) { n += 1; id = "m" + stableHash(key) + "-\(n)" }
                 used.insert(id)
+                let legacy = "m" + stableHash(address.absoluteString + "|" + name)
                 let hls = preferHLS ? hlsVariant(of: address) : nil
                 channels.append(IPTVChannel(id: id, name: name, group: meta.group, url: hls ?? address,
                                             streamID: nil, archive: meta.archive, logo: meta.logo,
                                             epgID: meta.epgID, archiveTemplate: meta.template,
                                             archiveMode: meta.mode, archiveDays: meta.days,
-                                            altURL: hls == nil ? nil : address))
+                                            altURL: hls == nil ? nil : address, legacyID: legacy == id ? nil : legacy))
                 meta = Meta()
             }
         }
         return channels
+    }
+
+    /// Indirizzo di un film o episodio (/movie/... o /series/..., oppure file video) invece di un canale.
+    static func isOnDemand(_ url: URL) -> Bool {
+        let parts = url.pathComponents
+        if parts.count >= 5, ["movie", "movies", "series"].contains(parts[1].lowercased()) { return true }
+        return ["mp4", "mkv", "avi", "mov", "m4v"].contains(url.pathExtension.lowercased())
     }
 
     private static func displayName(_ line: String) -> String {
