@@ -154,6 +154,8 @@ struct HelpView: View {
         ("Una sola connessione", [
             Entry(title: "Perche'",
                   text: "Molti abbonamenti permettono una o due connessioni contemporanee. L'app ne usa sempre una sola: diretta, timeshift e registrazione condividono lo stesso download."),
+            Entry(title: "Registrare con il player chiuso",
+                  text: "Con il timeshift attivo anche \"Registra\" dall'elenco dei canali (o una registrazione programmata) passa dal buffer: l'app scarica il canale una volta sola e, se poi lo apri, lo guardi dalla stessa connessione."),
             Entry(title: "Registrare e guardare",
                   text: "Mentre guardi puoi registrare solo il canale che stai guardando, con il timeshift attivo. Se scegli un altro canale, un replay o un film durante una registrazione, l'app chiede prima di fermarla. I file gia' registrati si guardano sempre."),
             Entry(title: "Replay e timeshift",

@@ -647,10 +647,31 @@ final class TimeshiftServer: @unchecked Sendable {
         lock.unlock()
     }
 
+    private var starting: Task<Bool, Never>?
+
+    /// Avvio serializzato: piu' chiamate insieme (ritorno in primo piano, controllo periodico, AirPlay)
+    /// aspettano lo stesso avvio invece di crearne due.
     func start() async -> Bool {
         if isRunning { return true }
-        listener?.cancel()
+        lock.lock()
+        if let running = starting {
+            lock.unlock()
+            return await running.value
+        }
+        let task = Task<Bool, Never> { await self.startListener() }
+        starting = task
+        lock.unlock()
+        let result = await task.value
+        lock.lock(); starting = nil; lock.unlock()
+        return result
+    }
+
+    private func startListener() async -> Bool {
+        if isRunning { return true }
+        let old = listener
         listener = nil
+        old?.stateUpdateHandler = nil
+        old?.cancel()
         // In ascolto su tutte le interfacce: il player del telefono usa 127.0.0.1, l'Apple TV (AirPlay)
         // l'indirizzo Wi-Fi del telefono. Ogni richiesta deve portare il codice di sessione.
         let parameters = NWParameters.tcp
@@ -666,15 +687,17 @@ final class TimeshiftServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in self?.handle(connection) }
         let ready: Bool = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let gate = ResumeOnce(continuation)
-            listener.stateUpdateHandler = { [weak self] state in
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
+                // Solo il listener attuale puo' segnare il server come fermo.
+                guard let self, let listener, self.listener === listener else { gate.finish(false); return }
                 switch state {
                 case .ready: gate.finish(true)
                 case .failed(let error):
                     gate.finish(false)
-                    self?.markDown("server chiuso: \(error.localizedDescription)")
+                    self.markDown("server chiuso: \(error.localizedDescription)")
                 case .cancelled:
                     gate.finish(false)
-                    self?.markDown("server chiuso dal sistema")
+                    self.markDown("server chiuso dal sistema")
                 default: break
                 }
             }
@@ -825,6 +848,13 @@ final class TimeshiftServer: @unchecked Sendable {
         let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12)
         lock.lock(); files[String(id)] = index; lock.unlock()
         return "/rec/\(id)/play.m3u8"
+    }
+
+    /// Toglie dal server una registrazione pubblicata per AirPlay (percorso restituito da `register`).
+    func unregister(path: String) {
+        let parts = path.split(separator: "/")
+        guard parts.count >= 2 else { return }
+        lock.lock(); files[String(parts[1])] = nil; lock.unlock()
     }
 
     private func respondRecording(_ connection: NWConnection, path: String, isHead: Bool) {
@@ -997,6 +1027,8 @@ final class TimeshiftManager: ObservableObject {
         server = TimeshiftServer(buffer: buffer)
         // Il buffer non sopravvive al riavvio dell'app: libera subito lo spazio dei vecchi segmenti.
         TimeshiftBuffer.wipeStorage(buffer.directoryURL)
+        // File di conversione AirPlay rimasti da una chiusura improvvisa dell'app.
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("AirPlay"))
     }
 
     var freeSpace: Int64 {
@@ -1013,8 +1045,12 @@ final class TimeshiftManager: ObservableObject {
     }
 
     /// Avvia (o cambia) il canale nel buffer e restituisce l'URL locale da cui VLC legge la diretta.
+    /// Cambia a ogni `release`: un `tune` iniziato prima (player chiuso durante l'avvio) non riattiva il download.
+    private var tuneGeneration = 0
+
     func tune(_ channel: IPTVChannel, url: URL) async -> URL? {
-        guard enabled, await server.start() else { return nil }
+        let generation = tuneGeneration
+        guard enabled, await server.start(), generation == tuneGeneration else { return nil }
         if !buffer.isReady { buffer.reset(capacity: desiredCapacity) }
         let liveStart = buffer.end
         if channelID != channel.id {
@@ -1090,6 +1126,7 @@ final class TimeshiftManager: ObservableObject {
 
     /// Il player e' stato chiuso: il download si ferma salvo registrazioni in corso dal buffer.
     func release(keepForRecording: Bool) {
+        tuneGeneration += 1
         playerAttached = false
         guard !keepForRecording else { return }
         downloader.stop()

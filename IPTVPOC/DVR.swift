@@ -38,6 +38,8 @@ final class DVRManager: ObservableObject {
     private(set) var bufferStartOffset: Int64?
     @AppStorage("dvr.limitMB") var limitMB: Int = 2048
     private var job: Task<Void, Never>?
+    /// Identifica la registrazione attuale: un job vecchio che finisce dopo non tocca lo stato di quella nuova.
+    private var jobID = UUID()
     private var recorder: Task<(Int64, String), Never>?
     private var bufferRecorder: BufferRecorder?
     var isBufferRecording: Bool { bufferRecorder != nil }
@@ -143,8 +145,35 @@ final class DVRManager: ObservableObject {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let name = "\(safeName)-\(formatter.string(from: Date())).ts"
         destination = directory.appendingPathComponent(name)
+        let id = UUID()
+        jobID = id
         let timeshift = TimeshiftManager.shared
-        if timeshift.downloading, timeshift.channelID == channel.id, let output = destination {
+        let tsURL = [channel.url, channel.altURL].compactMap { $0 }
+            .first { $0.pathExtension.lowercased() != "m3u8" }
+        // Una sola connessione: con il timeshift attivo si registra sempre dal buffer. Se il canale non e'
+        // gia' nel buffer (player chiuso) lo si sintonizza senza player; guardarlo poi riusa lo stesso download.
+        if timeshift.enabled, !(timeshift.downloading && timeshift.channelID == channel.id), let tsURL {
+            status = "Avvio del buffer per la registrazione…"
+            let playerWasOpen = timeshift.playerAttached
+            Task { [weak self] in
+                let ok = await timeshift.tune(channel, url: tsURL) != nil
+                guard let self, self.jobID == id, self.isRecording else {
+                    // Registrazione annullata durante l'avvio: il download aperto solo per lei si chiude.
+                    if ok && !playerWasOpen { timeshift.release(keepForRecording: false) }
+                    return
+                }
+                // Senza player aperto il download resta attivo solo per la registrazione.
+                if ok && !playerWasOpen { timeshift.release(keepForRecording: true) }
+                self.startRecording(channel: channel, id: id, tsURL: tsURL, viaBuffer: ok)
+            }
+            return
+        }
+        startRecording(channel: channel, id: id, tsURL: tsURL, viaBuffer: timeshift.downloading && timeshift.channelID == channel.id)
+    }
+
+    private func startRecording(channel: IPTVChannel, id: UUID, tsURL: URL?, viaBuffer: Bool) {
+        let timeshift = TimeshiftManager.shared
+        if viaBuffer, let output = destination {
             let recorder = BufferRecorder()
             bufferRecorder = recorder
             let buffer = timeshift.buffer
@@ -159,6 +188,7 @@ final class DVRManager: ObservableObject {
                     Task { @MainActor in DVRManager.shared.status = "Registrazione \(name) · \(size)" }
                 }
             }
+            let started = startedAt
             job = Task { [weak self] in
                 let (bytes, text) = await task.value
                 guard let self else { return }
@@ -168,7 +198,8 @@ final class DVRManager: ObservableObject {
                 let last = buffer.date(at: startOffset + bytes)
                 let measured = first.flatMap { start in last.map { $0.timeIntervalSince(start) } } ?? 0
                 self.saveInfo(for: output, channel: name,
-                              duration: measured > 1 ? measured : Date().timeIntervalSince(self.startedAt))
+                              duration: measured > 1 ? measured : Date().timeIntervalSince(started))
+                guard self.jobID == id else { self.refresh(); return }
                 self.status = text
                 self.isRecording = false
                 self.destination = nil
@@ -179,8 +210,6 @@ final class DVRManager: ObservableObject {
             }
             return
         }
-        let tsURL = [channel.url, channel.altURL].compactMap { $0 }
-            .first { $0.pathExtension.lowercased() != "m3u8" }
         if let tsURL, let output = destination {
             let limit = Int64(limitMB) * 1_048_576
             let name = channel.name
@@ -188,11 +217,13 @@ final class DVRManager: ObservableObject {
                 await DVRManager.recordTS(tsURL, to: output, limit: limit, name: name)
             }
             recorder = task
+            let started = startedAt
             job = Task { [weak self] in
                 let (bytes, text) = await task.value
                 guard let self else { return }
                 if bytes == 0 { try? FileManager.default.removeItem(at: output) }
-                self.saveInfo(for: output, channel: name, duration: Date().timeIntervalSince(self.startedAt))
+                self.saveInfo(for: output, channel: name, duration: Date().timeIntervalSince(started))
+                guard self.jobID == id else { self.refresh(); return }
                 self.status = text
                 self.isRecording = false
                 self.destination = nil
@@ -202,7 +233,7 @@ final class DVRManager: ObservableObject {
             }
         } else {
             job = Task { [weak self] in
-                await self?.recordHLS(channel.url)
+                await self?.recordHLS(channel.url, id: id)
             }
         }
     }
@@ -270,19 +301,23 @@ final class DVRManager: ObservableObject {
         refresh()
     }
 
-    private func recordHLS(_ url: URL) async {
+    private func recordHLS(_ url: URL, id: UUID) async {
         guard let output = destination else { return }
+        let started = startedAt
         let fileManager = FileManager.default
         guard fileManager.createFile(atPath: output.path, contents: nil),
               let handle = try? FileHandle(forWritingTo: output) else {
             isRecording = false; status = "Impossibile creare il file DVR."; return
         }
+        let channelName = recordingName
         defer {
             try? handle.close()
-            saveInfo(for: output, channel: recordingName, duration: Date().timeIntervalSince(startedAt))
-            isRecording = false
-            destination = nil
-            finished()
+            saveInfo(for: output, channel: channelName, duration: Date().timeIntervalSince(started))
+            if jobID == id {
+                isRecording = false
+                destination = nil
+                finished()
+            }
             refresh()
         }
         var playlistURL = url

@@ -38,6 +38,7 @@ final class PlayerController: ObservableObject {
     var airPlayCompatible: Bool { airPlayVerdict?.hasPrefix("compatibile") == true }
     /// Registrazione mandata in AirPlay (playlist VOD dal telefono).
     private var airPlayFile: URL?
+    private var airPlayRecordingPath: String?
     /// Conversione in corso per AirPlay (canale con audio MP2 o film MKV).
     private var transcoder: AirPlayTranscoder?
     private var transcodeIndex: GrowingHLS?
@@ -180,6 +181,7 @@ final class PlayerController: ObservableObject {
         checkLocalServer()
         checkAirPlayStall()
         pollAirPlay()
+        checkConversionSize()
         if engine == .vlc {
             watchdog()
             freezeCheck()
@@ -659,6 +661,13 @@ final class PlayerController: ObservableObject {
         if DVRManager.shared.isRecording { DVRManager.shared.stop() }
         if tsActive { tsActive = false }
         TimeshiftManager.shared.release(keepForRecording: false)
+        // Una sola connessione anche per il test dei formati: si chiude il flusso in corso e si lascia
+        // al download della diretta il tempo di chiudersi prima delle richieste di prova.
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        vlc.stop()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        guard mine == generation else { return }
         streamOffset = offset
         position = offset
         isBuffering = true
@@ -797,7 +806,7 @@ final class PlayerController: ObservableObject {
         log("AirPlay: \(airPlayVerdict ?? "")")
         SessionLog.shared.recordAirPlay(title, airPlayVerdict ?? "")
         // Canale aperto con l'Apple TV gia' scelta: il video va subito sulla TV.
-        if externalRouteActive && !airPlayActive && engine == .vlc && !conversionFailed {
+        if externalRouteActive && !airPlayActive && engine == .vlc && !conversionFailed && !audioOnlyRoute {
             log("AirPlay: Apple TV gia' collegata, mando il video")
             enterAirPlay()
         }
@@ -955,8 +964,15 @@ final class PlayerController: ObservableObject {
 
     /// Scelta l'Apple TV dal pulsante AirPlay: con il timeshift attivo e un canale compatibile si passa
     /// da VLC ad AVPlayer sulla playlist HLS del buffer; scollegando l'AirPlay si torna a VLC dallo stesso punto.
+    /// L'uscita AirPlay scelta e' solo audio: niente passaggio del video finche' non cambia uscita.
+    private var audioOnlyRoute = false
+    private var routeSignature = ""
+
     private func handleRouteChange() {
+        let signature = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.uid).joined(separator: ",")
+        if signature != routeSignature { routeSignature = signature; audioOnlyRoute = false }
         if !externalRouteActive { airPlayAudioOnly = nil }
+        if audioOnlyRoute { return }
         if externalRouteActive && !airPlayActive { enterAirPlay() }
         else if !externalRouteActive && airPlayActive { exitAirPlay() }
     }
@@ -1049,7 +1065,14 @@ final class PlayerController: ObservableObject {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 self.player.allowsExternalPlayback = true
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                self.log("AirPlay: video sulla TV \(self.player.isExternalPlaybackActive ? "attivo" : "ancora non attivo")")
+                if self.player.isExternalPlaybackActive {
+                    self.log("AirPlay: video sulla TV attivo")
+                } else {
+                    // Uscita solo audio (HomePod, altoparlante): il video torna sul telefono, l'audio va all'altoparlante.
+                    self.log("AirPlay: uscita solo audio, il video resta sul telefono")
+                    self.audioOnlyRoute = true
+                    self.exitAirPlay()
+                }
             }
         case .failed:
             log("AirPlay: errore \(text ?? "")")
@@ -1137,6 +1160,21 @@ final class PlayerController: ObservableObject {
         }
     }
 
+    /// La conversione di una diretta scrive un file che cresce finche' dura l'AirPlay: oltre 3 GB, o con meno
+    /// di 1 GB libero, si riparte con un file nuovo dal punto attuale (pochi secondi di attesa sulla TV).
+    private func checkConversionSize() {
+        guard airPlayActive, let origin = transcodeOrigin, origin.date != nil,
+              let file = transcoder?.output, heartbeatCount % 30 == 0 else { return }
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+        let free = TimeshiftManager.shared.freeSpace
+        guard size > 3_000_000_000 || (free > 0 && free < 1_000_000_000) else { return }
+        log("AirPlay: conversione \(size / 1_048_576) MB, spazio libero \(free / 1_048_576) MB: riparto con un file nuovo")
+        let position = tsPosition
+        exitAirPlay()
+        tsPosition = position
+        enterAirPlay()
+    }
+
     private func stopTranscoding() {
         if let index = transcodeIndex { TimeshiftManager.shared.server.unregisterGrowing(index) }
         transcoder?.stop()
@@ -1161,7 +1199,11 @@ final class PlayerController: ObservableObject {
             _ = await TimeshiftManager.shared.server.start()
             guard airPlayActive, airPlayFile == url else { return }
             guard let index, !index.segments.isEmpty,
-                  let playlist = TimeshiftManager.shared.lanURL(path: TimeshiftManager.shared.server.register(index)) else {
+                  let playlist = TimeshiftManager.shared.lanURL(path: { () -> String in
+                      let path = TimeshiftManager.shared.server.register(index)
+                      airPlayRecordingPath = path
+                      return path
+                  }()) else {
                 airPlayNotice = "Registrazione non pronta per AirPlay: resta sul telefono"
                 airPlayActive = false
                 airPlayFile = nil
@@ -1220,6 +1262,10 @@ final class PlayerController: ObservableObject {
         }
         airPlayBase = nil
         externalObservation = nil
+        if let path = airPlayRecordingPath {
+            TimeshiftManager.shared.server.unregister(path: path)
+            airPlayRecordingPath = nil
+        }
         if let file = airPlayFile {
             let seconds = player.currentTime().seconds
             airPlayActive = false
@@ -1232,7 +1278,8 @@ final class PlayerController: ObservableObject {
             load(file, forceEngine: .vlc)
             return
         }
-        let date = player.currentItem?.currentDate() ?? tsPosition
+        // La data della playlist e' sfasata sull'Apple TV: si usa la posizione calcolata dall'app.
+        let date = tsPosition
         airPlayActive = false
         statusObservation = nil
         player.pause()

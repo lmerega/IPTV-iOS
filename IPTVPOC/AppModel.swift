@@ -292,14 +292,19 @@ final class AppModel: ObservableObject {
     private func needsRecordingStop(_ request: PlayRequest) -> Bool {
         let dvr = DVRManager.shared
         guard dvr.isRecording, !request.url.isFileURL else { return false }
-        if let channel = request.channel, request.program == nil, channel.id == dvr.recordingChannel?.id { return false }
+        // Stesso canale in diretta: va bene solo se la registrazione usa il buffer (stessa connessione).
+        if let channel = request.channel, request.program == nil, channel.id == dvr.recordingChannel?.id,
+           dvr.isBufferRecording { return false }
         return true
     }
 
     /// Registrazione programmata: parte subito se non si sta guardando altro, altrimenti chiede.
     private func canStartScheduled(_ item: ScheduledRecording, _ channel: IPTVChannel) -> Bool {
         guard let current = playing, !current.url.isFileURL else { return true }
-        if current.channel?.id == channel.id && current.program == nil { return true }
+        // Stesso canale: solo se il buffer lo sta gia' scaricando (la registrazione usera' quella connessione).
+        let timeshift = TimeshiftManager.shared
+        if current.channel?.id == channel.id && current.program == nil
+            && timeshift.downloading && timeshift.channelID == channel.id { return true }
         if pendingScheduled == nil { pendingScheduled = ScheduledConflict(item: item, channel: channel) }
         return false
     }
@@ -325,7 +330,8 @@ final class AppModel: ObservableObject {
 
     func play(_ channel: IPTVChannel, fullscreen: Bool = false) {
         let dvr = DVRManager.shared
-        if dvr.isRecording, let recording = dvr.recordingChannel, recording.id != channel.id {
+        if dvr.isRecording, let recording = dvr.recordingChannel,
+           recording.id != channel.id || !dvr.isBufferRecording {
             pendingChannel = channel
             pendingFullscreen = fullscreen
             return

@@ -302,6 +302,7 @@ final class VLCEngine: NSObject {
 final class AirPlayTranscoder: NSObject {
     var onFinish: ((Bool) -> Void)?
     var onState: ((String) -> Void)?
+    var output: URL? { nil }
     func start(input: URL, startTime: Double? = nil) -> URL? { nil }
     func stop() {}
 }
