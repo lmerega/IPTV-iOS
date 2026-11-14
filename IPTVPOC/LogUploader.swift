@@ -48,6 +48,7 @@ enum LogUploader {
         lines.append("Motore attivo: \(controller.engine == .vlc ? "VLC" : "AVPlayer"), live \(controller.isLive), timeshift \(controller.tsActive), pausa \(controller.isPaused), buffering \(controller.isBuffering)")
         lines.append("Timeshift: abilitato \(timeshift.enabled), \(timeshift.sizeGB) GB, scaricati \(timeshift.buffer.end / 1_048_576) MB, nel buffer \(timeshift.bufferedMinutes) min, download \(timeshift.downloading), indietro \(Int(controller.tsBehind)) s")
         if let info = controller.streamInfo { lines.append("Flusso: \(info)") }
+        lines.append(IPTVExtras.guideSummary ?? "Guida completa: non caricata")
         if let verdict = controller.airPlayVerdict { lines.append("AirPlay: \(verdict)") }
         lines.append(DVRManager.shared.diagnostics)
         if timeshift.enabled {

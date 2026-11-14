@@ -281,8 +281,10 @@ final class DownloadProgress: ObservableObject {
     private var lastUpdate: [String: Date] = [:]
 
     func update(_ label: String, received: Int64, expected: Int64, unit: String? = nil) {
-        // Al massimo 5 aggiornamenti al secondo per voce.
-        if let last = lastUpdate[label], Date().timeIntervalSince(last) < 0.2, received < expected { return }
+        // Al massimo 4 aggiornamenti al secondo per voce, anche quando la dimensione totale non e' nota
+        // (prima in quel caso passava ogni pezzetto e l'interfaccia si bloccava con file grandi).
+        if let last = lastUpdate[label], Date().timeIntervalSince(last) < 0.25,
+           expected <= 0 || received < expected { return }
         lastUpdate[label] = Date()
         if let index = items.firstIndex(where: { $0.id == label }) {
             items[index].received = received

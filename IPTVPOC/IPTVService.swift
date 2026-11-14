@@ -28,7 +28,7 @@ enum IPTVService {
         if case .none = cache { return try await fetch(url, timeout: timeout, progress: progress) }
         if let hit = APICache.read(url, policy: cache) { return hit }
         // Con una copia salvata non si aspetta la rete a lungo: se manca, si usa subito la copia.
-        let hasStale = APICache.readStale(url) != nil
+        let hasStale = APICache.hasCopy(url)
         do {
             let data = try await fetch(url, timeout: hasStale ? min(timeout, 15) : timeout, progress: progress,
                                        quick: hasStale)
@@ -68,6 +68,8 @@ enum IPTVService {
                 else { continuation.resume(throwing: IPTVError.invalidResponse) }
             }
             box.observation = task.progress.observe(\.completedUnitCount) { progress, _ in
+                // Si passa al thread principale al massimo 4 volte al secondo, non a ogni pezzetto ricevuto.
+                guard box.shouldSend() else { return }
                 let received = progress.completedUnitCount
                 let expected = max(0, progress.totalUnitCount)
                 Task { @MainActor in DownloadProgress.shared.update(label, received: received, expected: expected) }
@@ -78,6 +80,15 @@ enum IPTVService {
 
     private final class ObservationBox: @unchecked Sendable {
         var observation: NSKeyValueObservation?
+        private let lock = NSLock()
+        private var lastSent = Date.distantPast
+
+        func shouldSend() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard Date().timeIntervalSince(lastSent) >= 0.25 else { return false }
+            lastSent = Date()
+            return true
+        }
     }
 
     /// Sessione che non aspetta il ritorno della rete: per le richieste che hanno gia' una copia salvata.

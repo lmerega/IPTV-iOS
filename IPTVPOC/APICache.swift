@@ -95,6 +95,11 @@ enum APICache {
         return try? Data(contentsOf: file(for: url))
     }
 
+    /// C'e' una copia salvata (senza leggerla: la guida completa puo' pesare decine di MB).
+    static func hasCopy(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: file(for: url).path)
+    }
+
     /// Ultima copia disponibile, anche scaduta: serve quando la rete non risponde.
     static func readStale(_ url: URL) -> Data? {
         try? Data(contentsOf: file(for: url))

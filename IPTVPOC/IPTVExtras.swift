@@ -145,12 +145,20 @@ enum IPTVExtras {
               data.count < 150_000_000 else { return XMLTVGuide() }
         let label = "Guida: preparo i programmi"
         await MainActor.run { DownloadProgress.shared.update(label, received: 0, expected: 0) }
+        let began = Date()
         let guide = await Task.detached(priority: .utility) { () -> XMLTVGuide in
             parseXMLTV(gunzip(data) ?? data, wantedIDs: wantedIDs, wantedNames: wantedNames)
         }.value
         await MainActor.run { DownloadProgress.shared.finish(label) }
+        let count = guide.programs.values.reduce(0) { $0 + $1.count }
+        guideSummary = "Guida completa: \(data.count / 1_048_576) MB, \(guide.programs.count) voci, \(count) programmi, "
+            + "letta in \(Int(Date().timeIntervalSince(began))) s alle \(Date().formatted(date: .omitted, time: .shortened))"
+            + (guide.endsAt.map { ", finisce \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")
         return guide
     }
+
+    /// Stato dell'ultima guida completa letta (per il log di diagnostica).
+    nonisolated(unsafe) static var guideSummary: String?
 
     static func parseXMLTV(_ xml: Data, wantedIDs: Set<String>? = nil, wantedNames: Set<String>? = nil) -> XMLTVGuide {
         // Una guida che dichiara entita' proprie puo' far esplodere la memoria ("billion laughs"): si rifiuta.
