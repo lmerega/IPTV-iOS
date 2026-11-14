@@ -256,7 +256,18 @@ final class PlayerController: ObservableObject {
         var detail = "VLC fermo da 10 s (stato \(lastStateText.isEmpty ? "nessuno" : lastStateText))"
         if tsActive { detail += "; " + TimeshiftManager.shared.server.diagnostics }
         log(detail + ": riprovo (\(restartCount)/2)")
-        if tsActive { goLive() }
+        if tsActive {
+            // Prima di riprovare si controlla che il server locale risponda davvero (e se no si riapre).
+            Task {
+                let server = TimeshiftManager.shared.server
+                let before = server.diagnostics
+                let ok = await server.ensureAlive()
+                if server.diagnostics.contains("non rispondeva") && !before.contains("non rispondeva") {
+                    log(ok ? "Server locale non rispondeva: riaperto (porta \(server.port))" : "Server locale: impossibile riaprirlo")
+                }
+                goLive()
+            }
+        }
         else if let url = currentURL { load(url, forceEngine: .vlc) }
     }
 

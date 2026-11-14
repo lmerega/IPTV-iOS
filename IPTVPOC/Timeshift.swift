@@ -633,7 +633,8 @@ final class TimeshiftServer: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         let ago = lastRequest == .distantPast ? "mai" : "\(Int(Date().timeIntervalSince(lastRequest))) s fa"
         let state = listener.map { "\($0.state)" } ?? "assente"
-        var text = "Server locale: porta \(portValue) (\(state)), richieste \(requests) (ultima \(ago), da \(lastFrom / 1_048_576) MB), inviati \(bytesSent / 1_048_576) MB, riavvii \(restarts)"
+        var text = "Server locale: porta \(portValue) (\(state)), connessioni \(accepted) accettate / \(rejected) rifiutate, richieste \(requests) (ultima \(ago), da \(lastFrom / 1_048_576) MB), inviati \(bytesSent / 1_048_576) MB, riavvii \(restarts)"
+        if rejected > 0 { text += ", ultima rifiutata da \(lastRejected)" }
         if !lastFailure.isEmpty { text += ", ultimo stop: \(lastFailure)" }
         return text
     }
@@ -658,6 +659,28 @@ final class TimeshiftServer: @unchecked Sendable {
     }
 
     private var starting: Task<Bool, Never>?
+
+    /// Il server risponde davvero? iOS puo' chiudere il socket (app in background) lasciando lo stato
+    /// "pronto": VLC si vedrebbe rifiutare la connessione. Si prova con una richiesta e, se serve, si riapre.
+    func ensureAlive() async -> Bool {
+        if !isRunning { return await start() }
+        if await ping() { return true }
+        markDown("non rispondeva (socket chiuso dal sistema)")
+        return await start()
+    }
+
+    private static let pingSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 2
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
+    private func ping() async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/ping?t=\(token)") else { return false }
+        guard let (_, response) = try? await Self.pingSession.data(from: url) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 204
+    }
 
     /// Avvio serializzato: piu' chiamate insieme (ritorno in primo piano, controllo periodico, AirPlay)
     /// aspettano lo stesso avvio invece di crearne due.
@@ -726,20 +749,35 @@ final class TimeshiftServer: @unchecked Sendable {
     /// il server risponde solo al telefono stesso (127.0.0.1).
     private var lanOpen = false
     func setLANOpen(_ open: Bool) { lock.lock(); lanOpen = open; lock.unlock() }
+    private var accepted = 0
+    private var rejected = 0
+    private var lastRejected = ""
 
+    /// Indirizzo del telefono stesso: 127.x, ::1 e 127.x scritto in forma IPv6 (::ffff:127.x).
     private func isLoopback(_ endpoint: NWEndpoint) -> Bool {
         guard case .hostPort(let host, _) = endpoint else { return false }
         switch host {
         case .ipv4(let address): return address.isLoopback
-        case .ipv6(let address): return address.isLoopback || "\(address)".hasSuffix("127.0.0.1")
-        case .name(let name, _): return name == "localhost"
+        case .ipv6(let address):
+            if address.isLoopback { return true }
+            let bytes = [UInt8](address.rawValue)
+            return bytes.count == 16 && bytes[0..<10].allSatisfy { $0 == 0 } && bytes[10] == 0xff && bytes[11] == 0xff
+                && bytes[12] == 127
+        case .name(let name, _):
+            let lower = name.lowercased()
+            return lower == "localhost" || lower.hasPrefix("127.") || lower == "::1" || lower.hasPrefix("::ffff:127.")
         @unknown default: return false
         }
     }
 
     private func handle(_ connection: NWConnection) {
         lock.lock(); let open = lanOpen; lock.unlock()
-        guard open || isLoopback(connection.endpoint) else { connection.cancel(); return }
+        guard open || isLoopback(connection.endpoint) else {
+            lock.lock(); rejected += 1; lastRejected = "\(connection.endpoint)"; lock.unlock()
+            connection.cancel()
+            return
+        }
+        lock.lock(); accepted += 1; lock.unlock()
         connection.start(queue: DispatchQueue(label: "timeshift.connection"))
         receiveRequest(connection, Data())
     }
@@ -776,6 +814,11 @@ final class TimeshiftServer: @unchecked Sendable {
             return
         }
         let path = parts.count >= 2 ? (URLComponents(string: String(parts[1]))?.path ?? "") : ""
+        if path == "/ping" {
+            let pong = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            connection.send(content: Data(pong.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
         if path.hasPrefix("/hls/") {
             respondHLS(connection, path: path, isHead: parts.first == "HEAD")
             return
@@ -1088,7 +1131,7 @@ final class TimeshiftManager: ObservableObject {
 
     func tune(_ channel: IPTVChannel, url: URL) async -> URL? {
         let generation = tuneGeneration
-        guard enabled, await server.start(), generation == tuneGeneration else { return nil }
+        guard enabled, await server.ensureAlive(), generation == tuneGeneration else { return nil }
         if !buffer.isReady { buffer.reset(capacity: desiredCapacity) }
         let liveStart = buffer.end
         if channelID != channel.id {

@@ -22,7 +22,7 @@ struct ContentView: View {
                 model.refreshGuideIfStale()
                 // Il server del timeshift puo' essere stato chiuso da iOS mentre l'app era in background.
                 if TimeshiftManager.shared.downloading {
-                    Task { _ = await TimeshiftManager.shared.server.start() }
+                    Task { _ = await TimeshiftManager.shared.server.ensureAlive() }
                 }
             }
         }
