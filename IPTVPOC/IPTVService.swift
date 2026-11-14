@@ -272,11 +272,11 @@ enum IPTVService {
         return channels
     }
 
-    /// Indirizzo di un film o episodio (/movie/... o /series/..., oppure file video) invece di un canale.
+    /// Indirizzo di un film o episodio dei pannelli Xtream (/movie/utente/password/... o /series/...).
+    /// I file video sciolti restano: alcune playlist sono fatte solo di quelli.
     static func isOnDemand(_ url: URL) -> Bool {
         let parts = url.pathComponents
-        if parts.count >= 5, ["movie", "movies", "series"].contains(parts[1].lowercased()) { return true }
-        return ["mp4", "mkv", "avi", "mov", "m4v"].contains(url.pathExtension.lowercased())
+        return parts.count >= 5 && ["movie", "movies", "series"].contains(parts[1].lowercased())
     }
 
     private static func displayName(_ line: String) -> String {

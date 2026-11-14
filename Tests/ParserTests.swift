@@ -143,6 +143,24 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(ReplayResume.position(channelID: "c-test", program: program))
     }
 
+    func testRedactKeepsEncodingAndLooseVideoFiles() throws {
+        MediaRef.credentials = (user: "mario.r", pass: "a-b.c_d+e")
+        defer { MediaRef.credentials = nil }
+        let original = "http://h.invalid/movie/mario.r/a-b.c_d%2Be/9.mp4?token=x%2By"
+        let media = MediaRef(id: "movie-9", kind: "movie", title: "F", cover: nil, url: URL(string: original)!)
+        let stored = String(decoding: try JSONEncoder().encode(media), as: UTF8.self)
+        XCTAssertFalse(stored.contains("mario.r"))
+        XCTAssertTrue(stored.contains("x%2By"))
+        let back = try JSONDecoder().decode(MediaRef.self, from: Data(stored.utf8))
+        XCTAssertEqual(back.url.absoluteString, original)
+        let query = "http://h.invalid/x.php?username=mario.r&password=a-b.c_d%2Be&id=1"
+        let ref = MediaRef(id: "m", kind: "movie", title: "Q", cover: nil, url: URL(string: query)!)
+        let decoded = try JSONDecoder().decode(MediaRef.self, from: JSONEncoder().encode(ref))
+        XCTAssertEqual(decoded.url.absoluteString, query)
+        let loose = "#EXTM3U\n#EXTINF:-1,Loop\nhttp://h.invalid/video/loop.mp4\n"
+        XCTAssertEqual(IPTVService.parseM3U(loose, base: nil).count, 1)
+    }
+
     func testXMLTVDisplayNames() throws {
         let xml = """
         <tv><channel id="x1"><display-name>Rai 1</display-name></channel>

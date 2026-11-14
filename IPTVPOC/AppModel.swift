@@ -160,9 +160,10 @@ final class AppModel: ObservableObject {
         RecordingScheduler.shared.removeAll(source: profile.id)
         if profile.kind == "m3u" {
             APICache.remove(urls: [profile.playlist, profile.epgURL].compactMap { try? IPTVService.baseURL($0) })
-        } else {
-            APICache.invalidateAll()
-            try? FileManager.default.removeItem(at: APICache.directory)
+        } else if profiles.isEmpty {
+            // Nessuna sorgente rimasta: via tutta la cache. Con altre sorgenti si tiene (serve loro offline);
+            // le copie della sorgente eliminata spariscono da sole dopo 30 giorni.
+            APICache.clear()
         }
         if selectedID == profile.id { select(profiles.first) }
     }
@@ -293,7 +294,7 @@ final class AppModel: ObservableObject {
         var seen = Set<String>()
         var result: [(channel: IPTVChannel, program: GuideProgram)] = []
         func add(_ channelID: String, _ program: GuideProgram) {
-            guard program.end > now, let channel = channelByID[channelID],
+            guard program.end > now, let channel = channelByID[channelID], !hiddenLive.contains(channel.group),
                   seen.insert(channelID + "|" + program.id).inserted else { return }
             result.append((channel, program))
         }
@@ -465,6 +466,7 @@ final class AppModel: ObservableObject {
         }
         if let current = currentChannelID, let id = renamed[current] { currentChannelID = id }
         if let previous = previousChannelID, let id = renamed[previous] { previousChannelID = id }
+        RecordingScheduler.shared.migrate(renamed)
     }
 
     /// Programma in onda su un canale con archivio: si puo' guardare dall'inizio in differita.

@@ -65,36 +65,55 @@ struct MediaRef: Codable, Hashable {
     }
 
     /// Toglie utente e password (percorso Xtream /tipo/utente/password/... e parametri username/password).
+    /// Il resto dell'indirizzo resta byte per byte com'era.
     static func redact(_ url: URL) -> String {
         guard let creds = credentials, !creds.user.isEmpty,
               var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
         var comps = parts.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        let user = creds.user.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? creds.user
-        let pass = creds.pass.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? creds.pass
-        for i in comps.indices.dropLast() where (comps[i] == user || comps[i] == creds.user)
-            && (comps[i + 1] == pass || comps[i + 1] == creds.pass) {
+        for i in comps.indices.dropLast() where (comps[i].removingPercentEncoding ?? comps[i]) == creds.user
+            && (comps[i + 1].removingPercentEncoding ?? comps[i + 1]) == creds.pass {
             comps[i] = userMark
             comps[i + 1] = passMark
             break
         }
         parts.percentEncodedPath = comps.joined(separator: "/")
-        if let items = parts.queryItems {
-            parts.queryItems = items.map { item in
-                switch item.name {
-                case "username" where item.value == creds.user: return URLQueryItem(name: item.name, value: userMark)
-                case "password" where item.value == creds.pass: return URLQueryItem(name: item.name, value: passMark)
-                default: return item
-                }
+        if let items = parts.percentEncodedQueryItems {
+            var changed = false
+            let updated = items.map { item -> URLQueryItem in
+                let value = item.value.map { $0.removingPercentEncoding ?? $0 }
+                if item.name == "username" && value == creds.user { changed = true; return URLQueryItem(name: item.name, value: userMark) }
+                if item.name == "password" && value == creds.pass { changed = true; return URLQueryItem(name: item.name, value: passMark) }
+                return item
             }
+            if changed { parts.percentEncodedQueryItems = updated }
         }
         return parts.string ?? url.absoluteString
     }
 
+    /// Rimette utente e password con la codifica giusta per il percorso o per i parametri.
     static func restore(_ text: String) -> String {
-        guard text.contains(userMark) || text.contains(passMark), let creds = credentials else { return text }
-        let user = creds.user.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? creds.user
-        let pass = creds.pass.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? creds.pass
-        return text.replacingOccurrences(of: userMark, with: user).replacingOccurrences(of: passMark, with: pass)
+        guard text.contains(userMark) || text.contains(passMark), let creds = credentials,
+              var parts = URLComponents(string: text) else { return text }
+        var segment = CharacterSet.urlPathAllowed
+        segment.remove(charactersIn: "/+")
+        var query = CharacterSet.urlQueryAllowed
+        query.remove(charactersIn: "&=+")
+        func encoded(_ value: String, _ allowed: CharacterSet) -> String {
+            value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+        }
+        parts.percentEncodedPath = parts.percentEncodedPath
+            .replacingOccurrences(of: userMark, with: encoded(creds.user, segment))
+            .replacingOccurrences(of: passMark, with: encoded(creds.pass, segment))
+        if let items = parts.percentEncodedQueryItems {
+            parts.percentEncodedQueryItems = items.map { item in
+                switch item.value {
+                case userMark?: return URLQueryItem(name: item.name, value: encoded(creds.user, query))
+                case passMark?: return URLQueryItem(name: item.name, value: encoded(creds.pass, query))
+                default: return item
+                }
+            }
+        }
+        return parts.string ?? text
     }
 }
 
@@ -123,8 +142,21 @@ final class WatchHistory: ObservableObject {
 
     func use(source: IPTVSource?) {
         let id = source?.id.uuidString ?? ""
-        MediaRef.credentials = source.map { (user: $0.username, pass: $0.password) }
-        guard id != profileID else { return }
+        let newCredentials = source.map { (user: $0.username, pass: $0.password) }
+        if id == profileID {
+            // Stessa sorgente con utente o password cambiati: le visioni passano alle nuove credenziali
+            // (si salvano senza quelle vecchie e si rileggono con quelle nuove).
+            let old = MediaRef.credentials
+            guard old?.user != newCredentials?.user || old?.pass != newCredentials?.pass else { return }
+            let data = try? JSONEncoder().encode(Array(entries.values))
+            MediaRef.credentials = newCredentials
+            if let data, let list = try? JSONDecoder().decode([WatchEntry].self, from: data) {
+                entries = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { $1 })
+                save()
+            }
+            return
+        }
+        MediaRef.credentials = newCredentials
         profileID = id
         let defaults = UserDefaults.standard
         if let data = defaults.data(forKey: "watch.entries." + id),
@@ -432,6 +464,15 @@ final class RecordingScheduler: ObservableObject {
         check()
     }
 
+    /// Canali M3U con id cambiato (versioni precedenti): le programmate passano al nuovo id.
+    func migrate(_ renamed: [String: String]) {
+        var changed = false
+        for index in items.indices {
+            if let id = renamed[items[index].channelID] { items[index].channelID = id; changed = true }
+        }
+        if changed { save() }
+    }
+
     /// Elimina le programmate di una sorgente rimossa.
     func removeAll(source: UUID) {
         for item in items where item.sourceID == source { Notifier.cancel(id: item.id.uuidString) }
@@ -493,7 +534,9 @@ enum ReplayResume {
         let total = program.end.timeIntervalSince(program.start)
         let entry = id(channelID, program)
         // Quasi finito (o appena iniziato): niente da riprendere.
-        if position < 60 || (total > 0 && position / total > 0.93) {
+        // Primo minuto: non si tocca il punto salvato (l'offerta "Riprendi" puo' essere ancora sullo schermo).
+        if position < 60 { return }
+        if total > 0 && position / total > 0.93 {
             map[entry] = nil
         } else {
             map[entry] = [position, Date().timeIntervalSince1970]

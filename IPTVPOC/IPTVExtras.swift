@@ -140,7 +140,8 @@ enum IPTVExtras {
             _ = xmlParser.parse()
             // Anche per nome del canale (normalizzato): serve alle playlist senza tvg-id o con id diversi.
             var result = parser.programs
-            for (name, id) in parser.names where result[nameKey(name)] == nil {
+            // In ordine di file: a parita' di nome normalizzato vince il primo canale (risultato stabile).
+            for (name, id) in parser.nameOrder where result[nameKey(name)] == nil {
                 if let list = parser.programs[id] { result[nameKey(name)] = list }
             }
             return result
@@ -186,6 +187,7 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
     private(set) var programs: [String: [GuideProgram]] = [:]
     /// Nomi visualizzati dei canali della guida -> id del canale.
     private(set) var names: [String: String] = [:]
+    private(set) var nameOrder: [(String, String)] = []
     private var channelTag = ""
     private var displayName = ""
     private var inDisplayName = false
@@ -246,7 +248,10 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
         if name == "display-name" && inDisplayName {
             inDisplayName = false
             let clean = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !clean.isEmpty && names[clean] == nil { names[clean] = channelTag }
+            if !clean.isEmpty && names[clean] == nil {
+                names[clean] = channelTag
+                nameOrder.append((clean, channelTag))
+            }
             return
         }
         if name == "channel" { channelTag = ""; return }
