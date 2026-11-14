@@ -727,6 +727,16 @@ final class PlayerController: ObservableObject {
         let timeshift = TimeshiftManager.shared
         guard tsActive, let range = timeshift.buffer.dateRange else { return }
         if airPlayActive {
+            // Conversione (audio MP2): un punto prima della parte gia' convertita si raggiunge riavviando la
+            // conversione da li', leggendo dal buffer del telefono.
+            if let origin = transcodeOrigin?.date, target < origin.addingTimeInterval(-2) {
+                let start = max(range.lowerBound.addingTimeInterval(2), target)
+                log("AirPlay: punto prima della conversione, la riavvio da li'")
+                exitAirPlay()
+                tsPosition = start
+                enterAirPlay()
+                return
+            }
             airPlaySeek(by: target.timeIntervalSince(tsPosition))
             return
         }
@@ -1289,6 +1299,33 @@ final class PlayerController: ObservableObject {
         engine = .vlc
         log("AirPlay terminato: torno a VLC dallo stesso punto")
         seekTimeshift(to: date)
+    }
+
+    /// Cambia canale senza chiudere il player: chiude l'eventuale AirPlay del canale precedente (con l'Apple TV
+    /// ancora scelta, il nuovo canale ci torna da solo appena ne sono noti i formati) e apre la nuova diretta.
+    func switchLive(to channel: IPTVChannel) {
+        saveProgress(force: true)
+        if airPlayActive {
+            stopTranscoding()
+            transcodeOrigin = nil
+            airPlayFile = nil
+            airPlayBase = nil
+            externalObservation = nil
+            statusObservation = nil
+            airPlayActive = false
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            engine = .vlc
+        }
+        self.channel = channel
+        title = channel.name
+        media = nil
+        knownDuration = nil
+        finished = false
+        conversionFailed = false
+        airPlayAudioOnly = nil
+        log("Cambio canale: \(channel.name)")
+        play(channel.url, fallback: channel.altURL, live: true)
     }
 
     func stop() {

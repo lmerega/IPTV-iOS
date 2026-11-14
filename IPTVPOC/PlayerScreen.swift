@@ -8,6 +8,15 @@ private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
 
 struct PlayerScreen: View {
     let request: PlayRequest
+    /// Contenuto in riproduzione: parte da `request` e cambia con lo zapping o con l'elenco canali,
+    /// senza chiudere e riaprire il player.
+    @State private var active: PlayRequest
+    @State private var showChannels = false
+
+    init(request: PlayRequest) {
+        self.request = request
+        _active = State(initialValue: request)
+    }
     @EnvironmentObject private var model: AppModel
     @StateObject private var controller = PlayerController()
     @ObservedObject private var dvr = DVRManager.shared
@@ -44,7 +53,7 @@ struct PlayerScreen: View {
             if fullscreen { fullscreenBody } else { normalBody }
         }
         .sheet(isPresented: $showDiagnostics) {
-            CatchupDiagnosticsView(controller: controller, channel: request.channel,
+            CatchupDiagnosticsView(controller: controller, channel: active.channel,
                                    program: controller.catchupProgram)
                 .environmentObject(model)
         }
@@ -178,7 +187,7 @@ struct PlayerScreen: View {
     }
 
     @ViewBuilder private var programList: some View {
-        if request.channel != nil {
+        if active.channel != nil {
             List(visiblePrograms) { program in
                 Button { select(program) } label: {
                     HStack {
@@ -189,7 +198,7 @@ struct PlayerScreen: View {
                         }
                         Spacer()
                         if program.isLive { Text("Ora").font(.caption).foregroundStyle(.red) }
-                        else if let channel = request.channel, model.canReplay(program, channel: channel) {
+                        else if let channel = active.channel, model.canReplay(program, channel: channel) {
                             Image(systemName: "play.circle").foregroundStyle(.tint)
                         }
                     }
@@ -224,8 +233,17 @@ struct PlayerScreen: View {
                     }
                 }
             }
-            .navigationTitle(request.title)
+            .navigationTitle(active.title)
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: Binding(get: { showChannels && !fullscreen }, set: { showChannels = $0 })) {
+                NavigationStack {
+                    channelPanel
+                        .navigationTitle("Canali")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { Button("Chiudi") { showChannels = false } }
+                }
+                .presentationDetents([.medium, .large])
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Chiudi") { dismiss() } }
             }
@@ -243,8 +261,15 @@ struct PlayerScreen: View {
             if overlayVisible {
                 VStack {
                     HStack {
-                        Text(request.title).font(.headline).lineLimit(1)
+                        Text(active.title).font(.headline).lineLimit(1)
                         Spacer()
+                        if active.channel != nil {
+                            Button { withAnimation { showChannels.toggle() }; showOverlay(true) } label: {
+                                Image(systemName: "list.bullet.rectangle").font(.title3)
+                            }
+                            .accessibilityLabel("Elenco canali")
+                            .padding(.trailing, 12)
+                        }
                         AirPlayButton(tint: .white).frame(width: 32, height: 32).padding(.trailing, 12)
                         aspectMenu.font(.title3).padding(.trailing, 18)
                         Button { setFullscreen(false) } label: {
@@ -269,6 +294,16 @@ struct PlayerScreen: View {
                 .foregroundStyle(.white)
             }
         }
+        .overlay(alignment: .trailing) {
+            // A schermo intero l'elenco canali scorre sopra il video, sulla destra.
+            if showChannels {
+                channelPanel
+                    .frame(width: 340)
+                    .frame(maxHeight: .infinity)
+                    .background(.ultraThinMaterial)
+                    .transition(.move(edge: .trailing))
+            }
+        }
         .statusBarHidden(true)
         .background(Color.black.ignoresSafeArea())
     }
@@ -278,16 +313,48 @@ struct PlayerScreen: View {
     /// Scorri verso l'alto/il basso sul video per il canale successivo/precedente.
     private var zapGesture: some Gesture {
         DragGesture(minimumDistance: 40).onEnded { value in
-            guard request.channel != nil, abs(value.translation.height) > 70,
+            guard active.channel != nil, abs(value.translation.height) > 70,
                   abs(value.translation.height) > abs(value.translation.width) * 1.5 else { return }
             zap(value.translation.height < 0 ? 1 : -1)
         }
     }
 
     private func zap(_ delta: Int) {
-        guard let channel = request.channel, let target = model.neighbour(of: channel, delta: delta) else { return }
-        showToast(target.name)
-        model.play(target, fullscreen: fullscreen)
+        guard let channel = active.channel, let target = model.neighbour(of: channel, delta: delta) else { return }
+        switchChannel(target)
+    }
+
+    /// Cambia canale dentro lo stesso player (zapping, elenco canali, canale precedente).
+    private func switchChannel(_ channel: IPTVChannel) {
+        guard channel.id != active.channel?.id || controller.catchupProgram != nil else { return }
+        // Registrazione in corso su un altro canale: la conferma la chiede AppModel.
+        let dvr = DVRManager.shared
+        if dvr.isRecording, let recording = dvr.recordingChannel,
+           recording.id != channel.id || !dvr.isBufferRecording {
+            model.play(channel, fullscreen: fullscreen)
+            return
+        }
+        model.noteOpened(channel)
+        active = PlayRequest(title: channel.name, url: channel.url, channel: channel)
+        programs = []
+        resumeOffer = nil
+        nextCountdown = nil
+        showToast(channel.name)
+        controller.switchLive(to: channel)
+        Task { programs = await model.guide(for: channel) }
+    }
+
+    /// Canali tra cui scegliere nel player: l'elenco da cui si e' partiti, altrimenti tutti quelli visibili.
+    private var channelChoices: [IPTVChannel] {
+        let list = model.zapList.compactMap { model.channelByID[$0] }
+        return list.isEmpty ? model.visibleChannels : list
+    }
+
+    private var channelPanel: some View {
+        ChannelPanel(channels: channelChoices, current: active.channel?.id) { channel in
+            showChannels = false
+            switchChannel(channel)
+        }
     }
 
     // MARK: Riprendi e prossimo episodio
@@ -304,7 +371,7 @@ struct PlayerScreen: View {
                 }
                 .padding(10).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
-            if let seconds = nextCountdown, let next = request.next.first {
+            if let seconds = nextCountdown, let next = active.next.first {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Prossimo episodio tra \(seconds) s").font(.caption).foregroundStyle(.secondary)
                     Text(next.media?.displayTitle ?? next.title).font(.subheadline.bold()).lineLimit(2)
@@ -321,7 +388,7 @@ struct PlayerScreen: View {
     }
 
     private func startNextCountdown() {
-        guard !request.next.isEmpty, nextCountdown == nil else { return }
+        guard !active.next.isEmpty, nextCountdown == nil else { return }
         nextCountdown = 10
         Task {
             while let value = nextCountdown, value > 0 {
@@ -334,9 +401,9 @@ struct PlayerScreen: View {
     }
 
     private func playNext() {
-        guard var next = request.next.first else { return }
+        guard var next = active.next.first else { return }
         nextCountdown = nil
-        next.next = Array(request.next.dropFirst())
+        next.next = Array(active.next.dropFirst())
         next.startFullscreen = fullscreen
         model.open(next)
     }
@@ -479,14 +546,14 @@ struct PlayerScreen: View {
     }
 
     private var showLiveButton: Bool {
-        guard request.channel != nil else { return false }
+        guard active.channel != nil else { return false }
         if controller.tsActive { return controller.tsBehind > 10 }
         return !controller.isLive
     }
 
     private func goLive() {
         if controller.tsActive { controller.goLive() }
-        else { controller.play(request.url, fallback: request.channel?.altURL, live: true) }
+        else { controller.play(active.url, fallback: active.channel?.altURL, live: true) }
     }
 
     @ViewBuilder private var controls: some View {
@@ -501,6 +568,10 @@ struct PlayerScreen: View {
                 skipButton(-30, "gobackward.30")
                 skipButton(30, "goforward.30")
                 Spacer(minLength: 8)
+                if active.channel != nil {
+                    Button { showChannels = true } label: { Image(systemName: "list.bullet.rectangle").font(.title3) }
+                        .accessibilityLabel("Elenco canali")
+                }
                 AirPlayButton().frame(width: 30, height: 30)
                 aspectMenu.font(.title3)
                 tracksMenu.font(.title3)
@@ -514,7 +585,7 @@ struct PlayerScreen: View {
                     }
                     .buttonStyle(.bordered).controlSize(.small)
                 }
-                if let channel = request.channel, controller.catchupProgram == nil {
+                if let channel = active.channel, controller.catchupProgram == nil {
                     if recordingThisChannel {
                         Button(role: .destructive) { dvr.stop() } label: {
                             Label("Stop", systemImage: "stop.circle.fill").lineLimit(1).minimumScaleFactor(0.8)
@@ -550,7 +621,7 @@ struct PlayerScreen: View {
                         .buttonStyle(.bordered).controlSize(.small).tint(.red)
                     }
                 }
-                if let channel = request.channel, controller.catchupProgram == nil, let program = liveProgram,
+                if let channel = active.channel, controller.catchupProgram == nil, let program = liveProgram,
                    model.canStartOver(program, channel: channel) {
                     Button { startOver(program) } label: {
                         Label("Dall'inizio", systemImage: "backward.end.alt").labelStyle(.iconOnly)
@@ -558,8 +629,10 @@ struct PlayerScreen: View {
                     .buttonStyle(.bordered).controlSize(.small)
                     .accessibilityLabel("Guarda il programma in onda dall'inizio")
                 }
-                if request.channel != nil, model.previousChannelID != nil, model.previousChannelID != request.channel?.id {
-                    Button { model.playPrevious(fullscreen: fullscreen) } label: {
+                if active.channel != nil, model.previousChannelID != nil, model.previousChannelID != active.channel?.id {
+                    Button {
+                        if let id = model.previousChannelID, let channel = model.channelByID[id] { switchChannel(channel) }
+                    } label: {
                         Label("Canale precedente", systemImage: "arrow.uturn.backward").labelStyle(.iconOnly)
                     }
                     .buttonStyle(.bordered).controlSize(.small)
@@ -585,7 +658,7 @@ struct PlayerScreen: View {
             let content = LogUploader.report(controller: controller, source: model.current)
             Task {
                 let name = await LogUploader.upload(content)
-                showToast(name.map { "Inviato: \($0)" } ?? "Invio non riuscito")
+                showToast(name.map { "Inviato: \($0)" } ?? "Invio non riuscito\(LogUploader.lastError.map { ": \($0)" } ?? "")")
             }
             return
         }
@@ -604,11 +677,11 @@ struct PlayerScreen: View {
     }
 
     private func select(_ program: GuideProgram) {
-        guard let channel = request.channel, let source = model.current else { return }
+        guard let channel = active.channel, let source = model.current else { return }
         if model.canStartOver(program, channel: channel) {
             liveChoice = program
         } else if program.isLive {
-            controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
+            controller.play(active.url, fallback: active.channel?.altURL, live: active.channel != nil)
         } else if model.canReplay(program, channel: channel) {
             if dvr.isRecording { pendingCatchup = program; _ = source }
             else { Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) } }
@@ -616,22 +689,22 @@ struct PlayerScreen: View {
     }
 
     private func start() async {
-        controller.channel = request.channel
-        controller.title = request.channel?.name ?? request.title
-        controller.knownDuration = request.knownDuration
-        controller.media = request.media
-        if request.startFullscreen { fullscreen = true }
+        controller.channel = active.channel
+        controller.title = active.channel?.name ?? active.title
+        controller.knownDuration = active.knownDuration
+        controller.media = active.media
+        if active.startFullscreen { fullscreen = true }
         controller.enginePreference = model.current?.engine ?? "auto"
         controller.sourceProvider = { model.current }
         controller.onVariantResolved = { model.setCatchupVariant($0) }
         controller.log("Avvio riproduzione")
         showOverlay(true)
-        if let channel = request.channel, let program = request.program, let source = model.current {
+        if let channel = active.channel, let program = active.program, let source = model.current {
             await controller.playCatchup(source: source, channel: channel, program: program, offset: 0)
         } else {
-            controller.play(request.url, fallback: request.channel?.altURL, live: request.channel != nil)
+            controller.play(active.url, fallback: active.channel?.altURL, live: active.channel != nil)
         }
-        if let media = request.media, let position = WatchHistory.shared.resumePosition(media.id) {
+        if let media = active.media, let position = WatchHistory.shared.resumePosition(media.id) {
             resumeOffer = position
             Task {
                 // L'offerta sparisce da sola: senza scelta si guarda dall'inizio.
@@ -639,20 +712,20 @@ struct PlayerScreen: View {
                 resumeOffer = nil
             }
         }
-        if request.fromRecordingStart {
+        if active.fromRecordingStart {
             // Aspetta che il timeshift sia pronto, poi riparte dall'inizio della registrazione.
             for _ in 0..<40 where !controller.tsActive { try? await Task.sleep(nanoseconds: 250_000_000) }
             try? await Task.sleep(nanoseconds: 500_000_000)
             controller.seekToRecordingStart()
         }
-        if let channel = request.channel { programs = await model.guide(for: channel) }
+        if let channel = active.channel { programs = await model.guide(for: channel) }
     }
 
     /// Programma in onda adesso (dalla guida del player o da "ora in onda").
     private var liveProgram: GuideProgram? {
         let now = Date()
         if let live = programs.first(where: { $0.start <= now && $0.end > now }) { return live }
-        return request.channel.flatMap { model.nowNext[$0.id]?.first(where: { $0.start <= now && $0.end > now }) }
+        return active.channel.flatMap { model.nowNext[$0.id]?.first(where: { $0.start <= now && $0.end > now }) }
     }
 
     /// Riparte dall'inizio del programma in onda, in differita dall'archivio del provider.
@@ -662,7 +735,7 @@ struct PlayerScreen: View {
     }
 
     private func startCatchup(_ program: GuideProgram) {
-        guard let channel = request.channel, let source = model.current else { return }
+        guard let channel = active.channel, let source = model.current else { return }
         Task { await controller.playCatchup(source: source, channel: channel, program: program, offset: 0) }
     }
 
@@ -685,11 +758,11 @@ struct PlayerScreen: View {
     private var currentProgramEnd: Date? {
         let now = Date()
         if let live = programs.first(where: { $0.start <= now && $0.end > now }) { return live.end }
-        return request.channel.flatMap { model.nowNext[$0.id]?.first(where: { $0.start <= now && $0.end > now })?.end }
+        return active.channel.flatMap { model.nowNext[$0.id]?.first(where: { $0.start <= now && $0.end > now })?.end }
     }
 
     private var recordingThisChannel: Bool {
-        dvr.isRecording && dvr.recordingChannel?.id == request.channel?.id
+        dvr.isRecording && dvr.recordingChannel?.id == active.channel?.id
     }
 }
 
@@ -811,5 +884,27 @@ struct AirPlayButton: UIViewRepresentable {
 
     func updateUIView(_ picker: AVRoutePickerView, context: Context) {
         picker.tintColor = tint
+    }
+}
+
+/// Elenco dei canali dentro il player, con il programma in onda: tocca per cambiare canale senza uscire.
+struct ChannelPanel: View {
+    let channels: [IPTVChannel]
+    let current: String?
+    let onSelect: (IPTVChannel) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            List(channels) { channel in
+                Button { onSelect(channel) } label: { ChannelRow(channel: channel) }
+                    .listRowBackground(channel.id == current ? Color.accentColor.opacity(0.18) : Color.clear)
+                    .id(channel.id)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .onAppear {
+                if let current { proxy.scrollTo(current, anchor: .center) }
+            }
+        }
     }
 }

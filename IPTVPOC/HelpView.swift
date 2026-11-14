@@ -32,6 +32,8 @@ struct HelpView: View {
                   text: "Riporta al momento attuale della trasmissione dopo una pausa o un salto indietro."),
             Entry(title: "Pulsante Registra / Stop",
                   text: "Avvia e ferma la registrazione del canale che stai guardando (vedi Registrazioni)."),
+            Entry(title: "Elenco canali nel player",
+                  text: "Il pulsante con l'elenco (accanto ad AirPlay) mostra i canali della categoria da cui sei partito, con il programma in onda: tocca un canale per cambiarlo senza uscire dal player. In verticale si apre dal basso, a schermo intero scorre sulla destra sopra il video."),
             Entry(title: "Zapping",
                   text: "Scorri verso l'alto sul video per il canale successivo, verso il basso per il precedente, nell'elenco da cui sei partito (categoria, preferiti, recenti o ricerca). Il pulsante con la freccia curva torna al canale guardato prima."),
             Entry(title: "Icona stetoscopio",

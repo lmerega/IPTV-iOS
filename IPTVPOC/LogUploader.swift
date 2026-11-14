@@ -31,6 +31,8 @@ enum OneClipKey {
 /// Invio del log di diagnostica a 1clip.it (funzione nascosta: triplo tocco sullo stetoscopio).
 enum LogUploader {
     static let baseName = "lmiptvlog"
+    /// Motivo dell'ultimo invio non riuscito (mostrato nel messaggio).
+    nonisolated(unsafe) static var lastError: String?
 
     @MainActor
     static func report(controller: PlayerController, source: IPTVSource?) -> String {
@@ -93,8 +95,12 @@ enum LogUploader {
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name, "content": content])
             guard let (_, response) = try? await URLSession.shared.data(for: request),
                   let http = response as? HTTPURLResponse else { return nil }
-            if (200...299).contains(http.statusCode) { return name }
-            if ![400, 409, 422].contains(http.statusCode) { return nil }
+            if (200...299).contains(http.statusCode) { lastError = nil; return name }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                lastError = key == nil ? "manca la chiave (Impostazioni, tieni premuto Versione)" : "chiave non valida"
+                return nil
+            }
+            if ![400, 409, 422].contains(http.statusCode) { lastError = "HTTP \(http.statusCode)"; return nil }
         }
         return nil
     }

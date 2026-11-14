@@ -348,10 +348,15 @@ final class AppModel: ObservableObject {
     }
 
     private func open(_ channel: IPTVChannel, fullscreen: Bool) {
+        noteOpened(channel)
+        playing = PlayRequest(title: channel.name, url: channel.url, channel: channel, startFullscreen: fullscreen)
+    }
+
+    /// Canale aperto (anche cambiandolo dentro il player): precedente e recenti.
+    func noteOpened(_ channel: IPTVChannel) {
         if let current = currentChannelID, current != channel.id { previousChannelID = current }
         currentChannelID = channel.id
         addRecent(channel)
-        playing = PlayRequest(title: channel.name, url: channel.url, channel: channel, startFullscreen: fullscreen)
     }
 
     /// Canale successivo/precedente nell'elenco da cui si e' partiti (categoria, preferiti, ricerca).
