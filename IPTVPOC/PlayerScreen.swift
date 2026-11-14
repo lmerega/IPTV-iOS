@@ -355,16 +355,23 @@ struct PlayerScreen: View {
     }
 
     /// Canali tra cui scegliere nel player: l'elenco da cui si e' partiti, altrimenti tutti quelli visibili.
-    private var channelChoices: [IPTVChannel] {
+    /// Con elenchi molto lunghi (es. "Tutti") si mostra la categoria del canale in visione.
+    private func channelChoices() -> [IPTVChannel] {
         let list = model.zapList.compactMap { model.channelByID[$0] }
-        return list.isEmpty ? model.visibleChannels : list
+        let all = list.isEmpty ? model.visibleChannels : list
+        guard all.count > ChannelPanel.maxRows, let current = active.channel else { return all }
+        let group = all.filter { $0.group == current.group }
+        return group.isEmpty ? Array(all.prefix(ChannelPanel.maxRows)) : group
     }
 
     private var channelPanel: some View {
-        ChannelPanel(channels: channelChoices, current: active.channel?.id) { channel in
+        // .equatable(): il pannello non si ridisegna a ogni aggiornamento del player (tempo, buffer...),
+        // solo quando cambia il canale in visione.
+        ChannelPanel(current: active.channel?.id, choices: channelChoices) { channel in
             showChannels = false
             switchChannel(channel)
         }
+        .equatable()
     }
 
     // MARK: Riprendi e prossimo episodio
@@ -913,10 +920,15 @@ struct AirPlayButton: UIViewRepresentable {
 }
 
 /// Elenco dei canali dentro il player, con il programma in onda: tocca per cambiare canale senza uscire.
-struct ChannelPanel: View {
-    let channels: [IPTVChannel]
+struct ChannelPanel: View, Equatable {
+    static let maxRows = 400
     let current: String?
+    /// Letto una volta all'apertura: l'elenco non cambia mentre il pannello e' aperto.
+    let choices: () -> [IPTVChannel]
     let onSelect: (IPTVChannel) -> Void
+    @State private var channels: [IPTVChannel] = []
+
+    static func == (lhs: ChannelPanel, rhs: ChannelPanel) -> Bool { lhs.current == rhs.current }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -927,8 +939,16 @@ struct ChannelPanel: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .onAppear {
-                if let current { proxy.scrollTo(current, anchor: .center) }
+            .overlay { if channels.isEmpty { ProgressView() } }
+            .task {
+                guard channels.isEmpty else { return }
+                channels = choices()
+                // Il salto al canale in visione dopo che l'elenco e' stato disegnato (subito, dentro
+                // onAppear, con elenchi lunghi poteva bloccare l'interfaccia).
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                if let current, channels.contains(where: { $0.id == current }) {
+                    proxy.scrollTo(current, anchor: .center)
+                }
             }
         }
     }
