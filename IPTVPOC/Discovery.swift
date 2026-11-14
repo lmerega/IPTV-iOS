@@ -90,17 +90,8 @@ struct GlobalSearchView: View {
 
     /// Programmi gia' noti (ora in onda / a seguire) il cui titolo contiene la ricerca.
     private var programs: [ProgramHit] {
-        guard !query.isEmpty else { return [] }
-        let needle = OnDemandCatalog.key(query)
-        let byID = Dictionary(model.visibleChannels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var result: [ProgramHit] = []
-        for (id, list) in model.nowNext {
-            guard let channel = byID[id] else { continue }
-            for program in list where program.end > Date() && OnDemandCatalog.key(program.title).contains(needle) {
-                result.append(ProgramHit(channel: channel, program: program))
-            }
-        }
-        return result.sorted { $0.program.start < $1.program.start }.prefix(50).map { $0 }
+        guard query.count >= 2 else { return [] }
+        return model.searchPrograms(query).map { ProgramHit(channel: $0.channel, program: $0.program) }
     }
 
     var body: some View {

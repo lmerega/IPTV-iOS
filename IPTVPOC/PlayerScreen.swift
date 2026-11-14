@@ -29,6 +29,7 @@ struct PlayerScreen: View {
     @State private var overlayVisible = true
     @State private var hideToken = UUID()
     @State private var diagnosticTaps: [Date] = []
+    @State private var confirmLogUpload = false
     @State private var tapToken = UUID()
     @State private var toast: String?
     @State private var resumeOffer: Double?
@@ -56,6 +57,12 @@ struct PlayerScreen: View {
             CatchupDiagnosticsView(controller: controller, channel: active.channel,
                                    program: controller.catchupProgram)
                 .environmentObject(model)
+        }
+        .alert("Inviare il log di diagnostica?", isPresented: $confirmLogUpload) {
+            Button("Invia") { uploadLog() }
+            Button("Annulla", role: .cancel) {}
+        } message: {
+            Text("Contiene i dettagli tecnici della riproduzione (canale, formati, errori), senza utente e password. Serve solo per capire un problema.")
         }
         .overlay(alignment: .bottom) {
             if let toast {
@@ -182,7 +189,9 @@ struct PlayerScreen: View {
                 Button { setFullscreen(true) } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .padding(8).background(.black.opacity(0.55), in: Circle()).foregroundStyle(.white)
-                }.padding(8)
+                }
+                .accessibilityLabel("Schermo intero")
+                .padding(8)
             }
     }
 
@@ -275,6 +284,7 @@ struct PlayerScreen: View {
                         Button { setFullscreen(false) } label: {
                             Image(systemName: "arrow.down.right.and.arrow.up.left").font(.title3)
                         }
+                        .accessibilityLabel("Esci da schermo intero")
                     }
                     .padding().background(.black.opacity(0.55))
                     Spacer()
@@ -363,7 +373,11 @@ struct PlayerScreen: View {
         VStack(alignment: .trailing, spacing: 8) {
             if let position = resumeOffer {
                 HStack(spacing: 10) {
-                    Button { controller.resume(at: position); resumeOffer = nil } label: {
+                    Button {
+                        if controller.catchupProgram != nil { controller.seekCatchup(to: position) }
+                        else { controller.resume(at: position) }
+                        resumeOffer = nil
+                    } label: {
                         Label("Riprendi da \(clock(position))", systemImage: "play.fill")
                     }
                     .buttonStyle(.borderedProminent)
@@ -491,10 +505,12 @@ struct PlayerScreen: View {
         Button { controller.togglePause() } label: {
             Image(systemName: controller.isPaused ? "play.fill" : "pause.fill")
         }
+        .accessibilityLabel(controller.isPaused ? "Riproduci" : "Pausa")
     }
 
     private func skipButton(_ delta: Double, _ icon: String) -> some View {
         Button { controller.skip(delta) } label: { Image(systemName: icon).font(.title2) }
+            .accessibilityLabel(delta < 0 ? "Indietro di \(Int(-delta)) secondi" : "Avanti di \(Int(delta)) secondi")
             .disabled(!controller.canSkip || (delta > 0 && controller.isLive && !controller.tsActive
                                               && controller.catchupProgram == nil))
     }
@@ -576,6 +592,8 @@ struct PlayerScreen: View {
                 aspectMenu.font(.title3)
                 tracksMenu.font(.title3)
                 Button { diagnosticsTapped() } label: { Image(systemName: "stethoscope").font(.title3) }
+                    .accessibilityLabel("Diagnostica")
+                    .accessibilityHint("Tre tocchi rapidi inviano il log")
             }
             HStack(spacing: 10) {
                 if showLiveButton {
@@ -648,6 +666,14 @@ struct PlayerScreen: View {
         }
     }
 
+    private func uploadLog() {
+        let content = LogUploader.report(controller: controller, source: model.current)
+        Task {
+            let name = await LogUploader.upload(content)
+            showToast(name.map { "Inviato: \($0)" } ?? "Invio non riuscito\(LogUploader.lastError.map { ": \($0)" } ?? "")")
+        }
+    }
+
     private func diagnosticsTapped() {
         let now = Date()
         diagnosticTaps = diagnosticTaps.filter { now.timeIntervalSince($0) < 1 } + [now]
@@ -655,11 +681,7 @@ struct PlayerScreen: View {
         tapToken = token
         if diagnosticTaps.count >= 3 {
             diagnosticTaps = []
-            let content = LogUploader.report(controller: controller, source: model.current)
-            Task {
-                let name = await LogUploader.upload(content)
-                showToast(name.map { "Inviato: \($0)" } ?? "Invio non riuscito\(LogUploader.lastError.map { ": \($0)" } ?? "")")
-            }
+            confirmLogUpload = true
             return
         }
         Task {
@@ -704,7 +726,10 @@ struct PlayerScreen: View {
         } else {
             controller.play(active.url, fallback: active.channel?.altURL, live: active.channel != nil)
         }
-        if let media = active.media, let position = WatchHistory.shared.resumePosition(media.id) {
+        let replayPosition = active.program.flatMap { program in
+            active.channel.flatMap { ReplayResume.position(channelID: $0.id, program: program) }
+        }
+        if let position = replayPosition ?? active.media.flatMap({ WatchHistory.shared.resumePosition($0.id) }) {
             resumeOffer = position
             Task {
                 // L'offerta sparisce da sola: senza scelta si guarda dall'inizio.

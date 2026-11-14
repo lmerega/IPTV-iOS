@@ -609,7 +609,7 @@ final class TimeshiftDownloader: NSObject, URLSessionDataDelegate, @unchecked Se
     }
 }
 
-// MARK: - Server HTTP locale (solo 127.0.0.1) che serve il buffer a VLC
+// MARK: - Server HTTP locale che serve il buffer a VLC (127.0.0.1) e, durante AirPlay, all'Apple TV
 
 final class TimeshiftServer: @unchecked Sendable {
     private let buffer: TimeshiftBuffer
@@ -722,7 +722,24 @@ final class TimeshiftServer: @unchecked Sendable {
         return true
     }
 
+    /// Connessioni da altri dispositivi (Apple TV) accettate solo durante AirPlay; per il resto
+    /// il server risponde solo al telefono stesso (127.0.0.1).
+    private var lanOpen = false
+    func setLANOpen(_ open: Bool) { lock.lock(); lanOpen = open; lock.unlock() }
+
+    private func isLoopback(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
+        switch host {
+        case .ipv4(let address): return address.isLoopback
+        case .ipv6(let address): return address.isLoopback || "\(address)".hasSuffix("127.0.0.1")
+        case .name(let name, _): return name == "localhost"
+        @unknown default: return false
+        }
+    }
+
     private func handle(_ connection: NWConnection) {
+        lock.lock(); let open = lanOpen; lock.unlock()
+        guard open || isLoopback(connection.endpoint) else { connection.cancel(); return }
         connection.start(queue: DispatchQueue(label: "timeshift.connection"))
         receiveRequest(connection, Data())
     }
@@ -1104,12 +1121,14 @@ final class TimeshiftManager: ObservableObject {
     /// Playlist HLS raggiungibile dall'Apple TV (indirizzo Wi-Fi del telefono), o nil se non c'e' Wi-Fi.
     func hlsURL() -> URL? {
         guard server.port != 0, let address = Self.wifiAddress() else { return nil }
+        server.setLANOpen(true)
         return URL(string: "http://\(address):\(server.port)/hls/live.m3u8?t=\(server.token)")
     }
 
     /// Indirizzo raggiungibile dall'Apple TV per un percorso del server locale.
     func lanURL(path: String) -> URL? {
         guard server.port != 0, let address = Self.wifiAddress() else { return nil }
+        server.setLANOpen(true)
         return URL(string: "http://\(address):\(server.port)\(path)?t=\(server.token)")
     }
 

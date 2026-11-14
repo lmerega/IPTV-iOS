@@ -45,7 +45,7 @@ struct IPTVSource: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, server, username, password, playlist, epgURL
-        // "liveFormat": dalla 0.9 la scelta "HLS (m3u8)" resta salvata (prima tornava ad "Automatico").
+        // "liveFormat": dalla 1.0 la scelta "HLS (m3u8)" resta salvata (prima tornava ad "Automatico").
         case streamFormat = "liveFormat"
         case archiveShiftMinutes, catchupVariant, serverTimeZone, preferHLS, engine, hlsSupported
     }

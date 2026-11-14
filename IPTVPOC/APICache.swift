@@ -116,6 +116,18 @@ enum APICache {
         for url in urls { try? FileManager.default.removeItem(at: file(for: url)) }
     }
 
+    /// Elimina le copie non usate da oltre 30 giorni (sorgenti cambiate, indirizzi con token vecchi).
+    static func pruneOld() {
+        let limit = Date().addingTimeInterval(-30 * 86400)
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys)) ?? []
+        for file in files {
+            if let date = try? file.resourceValues(forKeys: Set(keys)).contentModificationDate, date < limit {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
     static func clear() {
         try? FileManager.default.removeItem(at: directory)
         invalidateAll()

@@ -114,6 +114,8 @@ final class WatchHistory: ObservableObject {
     static let shared = WatchHistory()
     @Published private(set) var entries: [String: WatchEntry] = [:]
     @Published private(set) var watched: Set<String> = []
+    /// Ordine in cui i contenuti sono diventati "visti": se ne tengono gli ultimi 3000.
+    private var watchedOrder: [String] = []
     private var profileID = ""
 
     /// Da qui in poi un contenuto si considera visto.
@@ -131,7 +133,8 @@ final class WatchHistory: ObservableObject {
         } else {
             entries = [:]
         }
-        watched = Set(defaults.stringArray(forKey: "watch.done." + id) ?? [])
+        watchedOrder = defaults.stringArray(forKey: "watch.done." + id) ?? []
+        watched = Set(watchedOrder)
     }
 
     private func save() {
@@ -140,7 +143,7 @@ final class WatchHistory: ObservableObject {
         if let data = try? JSONEncoder().encode(Array(list)) {
             UserDefaults.standard.set(data, forKey: "watch.entries." + profileID)
         }
-        UserDefaults.standard.set(Array(watched), forKey: "watch.done." + profileID)
+        UserDefaults.standard.set(watchedOrder, forKey: "watch.done." + profileID)
     }
 
     /// Salva il punto raggiunto; oltre il 93% il contenuto diventa "visto" ed esce da "Continua a guardare".
@@ -148,21 +151,33 @@ final class WatchHistory: ObservableObject {
         guard duration > 60, position.isFinite, duration.isFinite else { return }
         if position / duration >= Self.finishedFraction {
             entries[media.id] = nil
-            watched.insert(media.id)
+            markDone(media.id)
         } else if position > 20 {
             entries[media.id] = WatchEntry(media: media, position: position, duration: duration, updated: Date())
         }
         save()
     }
 
+    private func markDone(_ id: String) {
+        watched.insert(id)
+        watchedOrder.removeAll { $0 == id }
+        watchedOrder.append(id)
+        if watchedOrder.count > 3000 {
+            let dropped = watchedOrder.prefix(watchedOrder.count - 3000)
+            watchedOrder.removeFirst(dropped.count)
+            for old in dropped { watched.remove(old) }
+        }
+    }
+
     func markWatched(_ id: String) {
         entries[id] = nil
-        watched.insert(id)
+        markDone(id)
         save()
     }
 
     func unmarkWatched(_ id: String) {
         watched.remove(id)
+        watchedOrder.removeAll { $0 == id }
         save()
     }
 
@@ -212,6 +227,7 @@ final class SessionLog {
     func recordAirPlay(_ title: String, _ verdict: String) {
         airPlay.removeAll { $0.title == title }
         airPlay.append((title, verdict))
+        if airPlay.count > 30 { airPlay.removeFirst(airPlay.count - 30) }
     }
 }
 
@@ -361,6 +377,8 @@ struct ScheduledRecording: Codable, Identifiable, Hashable {
     var title: String
     var start: Date
     var end: Date
+    /// Sorgente a cui appartiene il canale (nil per quelle create prima della 1.0).
+    var sourceID: UUID? = nil
 }
 
 /// Registrazioni programmate dalla guida. iOS non puo' svegliare l'app: all'ora giusta arriva una notifica
@@ -374,6 +392,8 @@ final class RecordingScheduler: ObservableObject {
     var channelLookup: ((String) -> IPTVChannel?)?
     /// Decide se la registrazione puo' partire ora (una sola connessione: non mentre si guarda altro).
     var canStart: ((ScheduledRecording, IPTVChannel) -> Bool)?
+    /// Sorgente in uso (fornita da AppModel): le programmate di altre sorgenti aspettano.
+    var currentSource: (() -> UUID?)?
 
     private let key = "scheduled.recordings"
     /// Margini: si parte 1 minuto prima e si finisce 3 minuti dopo l'orario della guida.
@@ -401,7 +421,7 @@ final class RecordingScheduler: ObservableObject {
     func schedule(_ program: GuideProgram, channel: IPTVChannel) {
         guard program.end > Date(), !isScheduled(program, channel: channel) else { return }
         let item = ScheduledRecording(channelID: channel.id, channelName: channel.name, title: program.title,
-                                      start: program.start, end: program.end)
+                                      start: program.start, end: program.end, sourceID: currentSource?())
         items.append(item)
         items.sort { $0.start < $1.start }
         save()
@@ -410,6 +430,13 @@ final class RecordingScheduler: ObservableObject {
                           body: "\(item.channelName) alle \(item.start.formatted(date: .omitted, time: .shortened)). Apri l'app per registrare.",
                           at: item.start.addingTimeInterval(-Self.leadIn - 60))
         check()
+    }
+
+    /// Elimina le programmate di una sorgente rimossa.
+    func removeAll(source: UUID) {
+        for item in items where item.sourceID == source { Notifier.cancel(id: item.id.uuidString) }
+        items.removeAll { $0.sourceID == source }
+        save()
     }
 
     func cancel(_ item: ScheduledRecording) {
@@ -427,14 +454,59 @@ final class RecordingScheduler: ObservableObject {
             save()
         }
         let dvr = DVRManager.shared
+        let source = currentSource?()
+        let ready = items.filter { $0.start.addingTimeInterval(-Self.leadIn) <= now && ($0.sourceID == nil || $0.sourceID == source) }
+        // Programma successivo sullo stesso canale gia' in registrazione: si allunga quella in corso,
+        // invece di aspettarne la fine (si perdevano circa 4 minuti tra le due).
+        if dvr.isRecording, let recording = dvr.recordingChannel,
+           let next = ready.first(where: { $0.channelID == recording.id }) {
+            let newStop = next.end.addingTimeInterval(Self.tail)
+            if (dvr.stopDate ?? .distantFuture) < newStop { dvr.setStopDate(newStop) }
+            items.removeAll { $0.id == next.id }
+            save()
+            dvr.status = "Registrazione programmata: \(next.title)"
+            return
+        }
         guard !dvr.isRecording,
-              let due = items.first(where: { $0.start.addingTimeInterval(-Self.leadIn) <= now }),
+              let due = ready.first,
               let channel = channelLookup?(due.channelID) else { return }
         if let canStart, !canStart(due, channel) { return }
         items.removeAll { $0.id == due.id }
         save()
         dvr.start(channel: channel, stopAt: due.end.addingTimeInterval(Self.tail))
         dvr.status = "Registrazione programmata: \(due.title)"
+    }
+}
+
+// MARK: - Riprendi replay
+
+/// Punto raggiunto nei replay (differita): si offre "Riprendi" riaprendo lo stesso programma.
+enum ReplayResume {
+    private static let key = "replay.positions"
+
+    private static func id(_ channelID: String, _ program: GuideProgram) -> String {
+        channelID + "|" + String(Int(program.start.timeIntervalSince1970))
+    }
+
+    static func save(channelID: String, program: GuideProgram, position: Double) {
+        var map = UserDefaults.standard.dictionary(forKey: key) as? [String: [Double]] ?? [:]
+        let total = program.end.timeIntervalSince(program.start)
+        let entry = id(channelID, program)
+        // Quasi finito (o appena iniziato): niente da riprendere.
+        if position < 60 || (total > 0 && position / total > 0.93) {
+            map[entry] = nil
+        } else {
+            map[entry] = [position, Date().timeIntervalSince1970]
+        }
+        // Tiene i 50 piu' recenti, al massimo per 8 giorni (oltre l'archivio non c'e' piu').
+        let limit = Date().addingTimeInterval(-8 * 86400).timeIntervalSince1970
+        let kept = map.filter { ($0.value.last ?? 0) > limit }.sorted { ($0.value.last ?? 0) > ($1.value.last ?? 0) }.prefix(50)
+        UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) }), forKey: key)
+    }
+
+    static func position(channelID: String, program: GuideProgram) -> Double? {
+        let map = UserDefaults.standard.dictionary(forKey: key) as? [String: [Double]]
+        return map?[id(channelID, program)]?.first
     }
 }
 

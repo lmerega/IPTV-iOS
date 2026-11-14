@@ -134,6 +134,15 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(try! JSONDecoder().decode(MediaRef.self, from: data).url.absoluteString, "http://h.invalid/movie/u/p/2.mkv")
     }
 
+    func testReplayResumePositions() {
+        let start = Date().addingTimeInterval(-7200)
+        let program = GuideProgram(id: "p-test", title: "T", channelID: "c", start: start, end: start.addingTimeInterval(3600), description: "")
+        ReplayResume.save(channelID: "c-test", program: program, position: 600)
+        XCTAssertEqual(ReplayResume.position(channelID: "c-test", program: program), 600)
+        ReplayResume.save(channelID: "c-test", program: program, position: 3500)
+        XCTAssertNil(ReplayResume.position(channelID: "c-test", program: program))
+    }
+
     func testXMLTVDisplayNames() throws {
         let xml = """
         <tv><channel id="x1"><display-name>Rai 1</display-name></channel>

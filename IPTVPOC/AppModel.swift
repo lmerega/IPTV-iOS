@@ -107,13 +107,16 @@ final class AppModel: ObservableObject {
     @Published var catalogDate: Date?
     @Published var playing: PlayRequest?
 
-    private var xmltv: [String: [GuideProgram]] = [:]
+    private var xmltv: [String: [GuideProgram]] = [:] { didSet { programIndex = nil } }
+    /// Titoli normalizzati della guida XMLTV per la ricerca (costruito alla prima ricerca).
+    private var programIndex: [(key: String, channelID: String, program: GuideProgram)]?
     private var loadGeneration = 0
 
     var current: IPTVSource? { profiles.first { $0.id == selectedID } }
 
     init() {
         profiles = ProfileVault.loadAll()
+        Task.detached(priority: .background) { APICache.pruneOld() }
         if let text = UserDefaults.standard.string(forKey: "selectedProfile"),
            let id = UUID(uuidString: text), profiles.contains(where: { $0.id == id }) {
             selectedID = id
@@ -123,6 +126,7 @@ final class AppModel: ObservableObject {
         loadFavorites()
         WatchHistory.shared.use(source: current)
         RecordingScheduler.shared.channelLookup = { [weak self] id in self?.channelByID[id] }
+        RecordingScheduler.shared.currentSource = { [weak self] in self?.selectedID }
         RecordingScheduler.shared.canStart = { [weak self] item, channel in self?.canStartScheduled(item, channel) ?? true }
         Task { await reload() }
     }
@@ -153,6 +157,7 @@ final class AppModel: ObservableObject {
                      "watch.entries", "watch.done", "guide.refreshed"] {
             defaults.removeObject(forKey: name + "." + id)
         }
+        RecordingScheduler.shared.removeAll(source: profile.id)
         if profile.kind == "m3u" {
             APICache.remove(urls: [profile.playlist, profile.epgURL].compactMap { try? IPTVService.baseURL($0) })
         } else {
@@ -234,11 +239,9 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        var epgAddress = source.epgURL.isEmpty && source.kind == "xtream"
-            ? (try? IPTVService.xtreamURL(source, path: "/xmltv.php", query: [
-                ("username", source.username), ("password", source.password)]).absoluteString) ?? ""
-            : source.epgURL
         // Playlist M3U senza guida impostata: si usa quella indicata nella playlist (url-tvg).
+        // (Xtream usa la guida per canale del server.)
+        var epgAddress = source.epgURL
         if source.kind == "m3u" && epgAddress.isEmpty { epgAddress = IPTVService.headerGuide(for: source) ?? "" }
         if source.kind == "xtream" { preloadOnDemand(source) }
         RecordingScheduler.shared.check()
@@ -270,6 +273,35 @@ final class AppModel: ObservableObject {
         if source.kind == "xtream" { return await IPTVExtras.fullGuide(source, channel: channel) }
         guard let list = xmltvPrograms(channel) else { return [] }
         return list.sorted { $0.start < $1.start }
+    }
+
+    /// Programmi non ancora finiti il cui titolo contiene la ricerca: tutta la guida XMLTV (M3U) piu'
+    /// "ora in onda / a seguire" gia' caricati (Xtream).
+    func searchPrograms(_ query: String, limit: Int = 50) -> [(channel: IPTVChannel, program: GuideProgram)] {
+        let needle = OnDemandCatalog.key(query)
+        guard !needle.isEmpty else { return [] }
+        if programIndex == nil && !xmltv.isEmpty {
+            var index: [(key: String, channelID: String, program: GuideProgram)] = []
+            for channel in visibleChannels {
+                for program in xmltvPrograms(channel) ?? [] where program.end > Date() {
+                    index.append((OnDemandCatalog.key(program.title), channel.id, program))
+                }
+            }
+            programIndex = index
+        }
+        let now = Date()
+        var seen = Set<String>()
+        var result: [(channel: IPTVChannel, program: GuideProgram)] = []
+        func add(_ channelID: String, _ program: GuideProgram) {
+            guard program.end > now, let channel = channelByID[channelID],
+                  seen.insert(channelID + "|" + program.id).inserted else { return }
+            result.append((channel, program))
+        }
+        for entry in programIndex ?? [] where entry.key.contains(needle) { add(entry.channelID, entry.program) }
+        for (id, list) in nowNext {
+            for program in list where OnDemandCatalog.key(program.title).contains(needle) { add(id, program) }
+        }
+        return Array(result.sorted { $0.program.start < $1.program.start }.prefix(limit))
     }
 
     /// Programmi XMLTV di un canale: per tvg-id, altrimenti per nome.
@@ -398,6 +430,7 @@ final class AppModel: ObservableObject {
     private func rebuildChannelIndex() {
         let visible = channels.filter { !hiddenLive.contains($0.group) }
         visibleChannels = visible
+        programIndex = nil
         var counts: [String: Int] = [:]
         for channel in visible { counts[channel.group, default: 0] += 1 }
         groupCounts = counts

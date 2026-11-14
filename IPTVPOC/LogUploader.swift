@@ -78,7 +78,14 @@ enum LogUploader {
             lines.append("--- sessione: altri canali e contenuti (ultime \(min(earlier.count, 300)) righe) ---")
             lines.append(contentsOf: earlier.suffix(300))
         }
-        return lines.joined(separator: "\n")
+        var text = lines.joined(separator: "\n")
+        // Sicurezza in piu': utente e password della sorgente non devono mai uscire nel log.
+        if let source {
+            for secret in [source.password, source.username] where secret.count >= 3 {
+                text = text.replacingOccurrences(of: secret, with: "***")
+            }
+        }
+        return text
     }
 
     /// Crea il clip; se il nome e' occupato prova con un suffisso. Restituisce il nome usato.

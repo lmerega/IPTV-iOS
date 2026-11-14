@@ -63,7 +63,7 @@ struct SettingsView: View {
                                 }
                                 Spacer()
                                 if profile.id == model.selectedID { Image(systemName: "checkmark").foregroundStyle(.tint) }
-                                Button { editing = profile } label: { Image(systemName: "pencil.circle") }
+                                Button { editing = profile } label: { Image(systemName: "pencil.circle") }.accessibilityLabel("Modifica sorgente")
                                     .buttonStyle(.borderless)
                             }
                         }
@@ -133,7 +133,7 @@ struct SettingsView: View {
                             Text("""
                             Automatico: sceglie da solo per ogni flusso. Consigliato.
                             AVPlayer: il player di Apple. Consuma meno batteria e permette AirPlay verso Apple TV, ma riproduce solo HLS (.m3u8) e MP4.
-                            VLC: riproduce anche i flussi TS e quasi tutti i formati audio e video. Serve per il timeshift. Non supporta AirPlay.
+                            VLC: riproduce anche i flussi TS e quasi tutti i formati audio e video. Serve per il timeshift. Con AirPlay l'app passa il video all'Apple TV da sola.
                             Se AVPlayer non riesce ad aprire un flusso, l'app passa da sola a VLC.
                             """)
                             .font(.footnote).foregroundStyle(.secondary)

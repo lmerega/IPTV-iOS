@@ -405,9 +405,14 @@ final class PlayerController: ObservableObject {
             duration = known
             currentTime = vlc.position * known
         } else if engine == .vlc && duration <= 0 { duration = vlc.lengthSeconds }
-        guard catchupProgram != nil else { return }
+        guard let program = catchupProgram, let channel else { return }
         position = streamOffset + seconds
+        if Date().timeIntervalSince(lastReplaySave) > 10, !isPaused, !isBuffering {
+            lastReplaySave = Date()
+            ReplayResume.save(channelID: channel.id, program: program, position: position)
+        }
     }
+    private var lastReplaySave = Date.distantPast
 
     /// Lingue e sottotitoli (VLC; AVPlayer li offre gia' nei suoi controlli).
     private func refreshTracks() {
@@ -1249,6 +1254,7 @@ final class PlayerController: ObservableObject {
 
     func exitAirPlay() {
         guard airPlayActive else { return }
+        TimeshiftManager.shared.server.setLANOpen(false)
         airPlayErrorsSeen = 0
         if let origin = transcodeOrigin {
             // Ritorno da una conversione: si riparte sul telefono dal punto raggiunto sulla TV.
@@ -1306,6 +1312,7 @@ final class PlayerController: ObservableObject {
     func switchLive(to channel: IPTVChannel) {
         saveProgress(force: true)
         if airPlayActive {
+            TimeshiftManager.shared.server.setLANOpen(false)
             stopTranscoding()
             transcodeOrigin = nil
             airPlayFile = nil
@@ -1329,6 +1336,10 @@ final class PlayerController: ObservableObject {
     }
 
     func stop() {
+        TimeshiftManager.shared.server.setLANOpen(false)
+        if let program = catchupProgram, let channel, position > 0 {
+            ReplayResume.save(channelID: channel.id, program: program, position: position)
+        }
         stopTranscoding()
         if let routeObserver { NotificationCenter.default.removeObserver(routeObserver); self.routeObserver = nil }
         airPlayActive = false

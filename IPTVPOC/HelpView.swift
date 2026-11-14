@@ -37,7 +37,7 @@ struct HelpView: View {
             Entry(title: "Zapping",
                   text: "Scorri verso l'alto sul video per il canale successivo, verso il basso per il precedente, nell'elenco da cui sei partito (categoria, preferiti, recenti o ricerca). Il pulsante con la freccia curva torna al canale guardato prima."),
             Entry(title: "Icona stetoscopio",
-                  text: "Apre la diagnostica: il registro di cosa sta facendo il player e il test dei formati di replay. \"Copia log\" copia il registro per inviarlo.")
+                  text: "Apre la diagnostica: il registro di cosa sta facendo il player e il test dei formati di replay. \"Copia log\" copia il registro per inviarlo. Tre tocchi rapidi sull'icona inviano il log di diagnostica, dopo una conferma.")
         ]),
         ("Canali: preferiti, recenti, categorie", [
             Entry(title: "Preferiti",
@@ -49,7 +49,7 @@ struct HelpView: View {
         ]),
         ("Ricerca", [
             Entry(title: "Cerca ovunque",
-                  text: "La scheda Cerca (lente) cerca insieme canali, programmi in onda e a seguire, film e serie. Ignora maiuscole e accenti. La prima ricerca di film e serie puo' richiedere qualche secondo per preparare i cataloghi.")
+                  text: "La scheda Cerca (lente) cerca insieme canali, programmi (con le playlist M3U tutta la guida, con Xtream quelli in onda e a seguire gia' caricati), film e serie. Ignora maiuscole e accenti. La prima ricerca di film e serie puo' richiedere qualche secondo per preparare i cataloghi.")
         ]),
         ("Guida programmi", [
             Entry(title: "Elenco o griglia",
@@ -61,7 +61,7 @@ struct HelpView: View {
         ]),
         ("Film e serie", [
             Entry(title: "Riprendi e Continua a guardare",
-                  text: "L'app ricorda dove hai interrotto film ed episodi: riaprendoli compare \"Riprendi da…\". In cima a Film e Serie la riga \"Continua a guardare\" mostra quelli lasciati a meta'; tienili premuti per segnarli come visti o toglierli."),
+                  text: "L'app ricorda dove hai interrotto film ed episodi: riaprendoli compare \"Riprendi da…\". Vale anche per i replay dei programmi passati. In cima a Film e Serie la riga \"Continua a guardare\" mostra quelli lasciati a meta'; tienili premuti per segnarli come visti o toglierli."),
             Entry(title: "Prossimo episodio",
                   text: "A fine episodio parte un conto alla rovescia di 10 secondi per il successivo: \"Riproduci ora\" o \"Annulla\". Gli episodi visti hanno il segno verde; nella serie il primo pulsante riprende da dove eri."),
             Entry(title: "Aggiunti di recente",
@@ -127,7 +127,7 @@ struct HelpView: View {
             Entry(title: "Quale scegliere",
                   text: "Lascia \"Automatico\": sceglie da solo per ogni flusso e, se un player non riesce ad aprirlo, passa all'altro."),
             Entry(title: "VLC",
-                  text: "Riproduce i flussi TS e quasi tutti i formati audio e video. E' quello usato dal timeshift. Non supporta AirPlay."),
+                  text: "Riproduce i flussi TS e quasi tutti i formati audio e video. E' quello usato dal timeshift. Con AirPlay il telefono manda il video all'Apple TV da solo (se serve convertendo l'audio)."),
             Entry(title: "AVPlayer",
                   text: "Il player di Apple: consuma meno batteria e permette AirPlay verso Apple TV, ma riproduce solo HLS (.m3u8) e MP4. Se il tuo server fornisce solo TS non compare tra le opzioni."),
             Entry(title: "HLS (.m3u8) sul server",
