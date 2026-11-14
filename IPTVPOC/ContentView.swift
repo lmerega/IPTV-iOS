@@ -281,7 +281,7 @@ struct ChannelRow: View {
             if channel.archive { Image(systemName: "clock.arrow.circlepath").foregroundStyle(.secondary) }
         }
         .contentShape(Rectangle())
-        .task(id: model.guideRevision) {
+        .task(id: "\(model.guideRevision)-\(Int(Date().timeIntervalSince1970 / 900))") {
             // Scorrendo veloce le righe passano senza chiedere la guida: si carica solo dove ci si ferma.
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled else { return }

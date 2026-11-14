@@ -129,6 +129,7 @@ enum IPTVExtras {
     static func loadXMLTV(_ address: String) async -> [String: [GuideProgram]] {
         guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return [:] }
+        APICache.setGroup("guide", for: url)
         guard let data = try? await IPTVService.get(url, timeout: 120, cache: .maxAge(12 * 3600), progress: "Guida XMLTV"),
               data.count < 120_000_000 else { return [:] }
         return await Task.detached(priority: .utility) { () -> [String: [GuideProgram]] in
@@ -157,6 +158,10 @@ enum IPTVExtras {
         }
         if flags & 2 != 0 { position += 2 }
         guard position < bytes.count - 8 else { return nil }
+        // Dimensione decompressa (ultimi 4 byte): oltre 300 MB l'app rischierebbe la chiusura per memoria.
+        let n = bytes.count
+        let isize = Int(bytes[n - 4]) | Int(bytes[n - 3]) << 8 | Int(bytes[n - 2]) << 16 | Int(bytes[n - 1]) << 24
+        guard isize < 300_000_000 else { return nil }
         let payload = Data(bytes[position..<(bytes.count - 8)])
         return try? (payload as NSData).decompressed(using: .zlib) as Data
     }

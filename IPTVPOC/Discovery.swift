@@ -210,6 +210,22 @@ struct GlobalSearchView: View {
 
 // MARK: - Guida a griglia
 
+/// Limita le richieste di guida contemporanee della griglia.
+actor GuideLimiter {
+    static let shared = GuideLimiter()
+    private var running = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if running < 4 { running += 1; return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        if waiting.isEmpty { running = max(0, running - 1) } else { waiting.removeFirst().resume() }
+    }
+}
+
 /// Guida stile decoder: canali in verticale, orari in orizzontale. Tocca un programma per guardarlo,
 /// rivederlo (replay) o programmarne la registrazione.
 struct GuideGridView: View {
@@ -217,6 +233,7 @@ struct GuideGridView: View {
     @ObservedObject private var scheduler = RecordingScheduler.shared
     let channels: [IPTVChannel]
     @State private var guides: [String: [GuideProgram]] = [:]
+    @State private var loadedRevision = 0
     @State private var selected: (IPTVChannel, GuideProgram)?
     @State private var showActions = false
 
@@ -241,12 +258,17 @@ struct GuideGridView: View {
                     Section {
                         ForEach(channels) { channel in
                             row(channel)
-                                .task {
+                                .task(id: model.guideRevision) {
                                     // Breve attesa: scorrendo veloce non si scaricano guide di righe gia' passate.
                                     try? await Task.sleep(nanoseconds: 250_000_000)
-                                    guard !Task.isCancelled, guides[channel.id] == nil else { return }
+                                    guard !Task.isCancelled, guides[channel.id] == nil || loadedRevision != model.guideRevision else { return }
+                                    // Al massimo 4 richieste insieme verso il provider.
+                                    await GuideLimiter.shared.acquire()
+                                    defer { Task { await GuideLimiter.shared.release() } }
+                                    guard !Task.isCancelled else { return }
                                     let list = await model.guide(for: channel)
                                     guides[channel.id] = list.filter { $0.end > windowStart && $0.start < windowEnd }
+                                    loadedRevision = model.guideRevision
                                 }
                         }
                     } header: {

@@ -428,7 +428,8 @@ struct PlayerScreen: View {
 
     private func skipButton(_ delta: Double, _ icon: String) -> some View {
         Button { controller.skip(delta) } label: { Image(systemName: icon).font(.title2) }
-            .disabled(!controller.canSkip)
+            .disabled(!controller.canSkip || (delta > 0 && controller.isLive && !controller.tsActive
+                                              && controller.catchupProgram == nil))
     }
 
     @ViewBuilder private func seekBar(_ program: GuideProgram) -> some View {

@@ -27,9 +27,14 @@ enum IPTVService {
                     progress: String? = nil) async throws -> Data {
         if case .none = cache { return try await fetch(url, timeout: timeout, progress: progress) }
         if let hit = APICache.read(url, policy: cache) { return hit }
+        // Con una copia salvata non si aspetta la rete a lungo: se manca, si usa subito la copia.
+        let hasStale = APICache.readStale(url) != nil
         do {
-            let data = try await fetch(url, timeout: timeout, progress: progress)
-            APICache.write(url, data: data)
+            let data = try await fetch(url, timeout: hasStale ? min(timeout, 15) : timeout, progress: progress,
+                                       quick: hasStale)
+            // Si salva solo una risposta utile: un elenco vuoto o una pagina vuota restano fuori dalla cache.
+            if looksValid(data) { APICache.write(url, data: data) }
+            else if let stale = APICache.readStale(url) { return stale }
             return data
         } catch {
             if let stale = APICache.readStale(url) { return stale }
@@ -75,7 +80,24 @@ enum IPTVService {
         var observation: NSKeyValueObservation?
     }
 
-    private static func fetch(_ url: URL, timeout: TimeInterval, progress: String? = nil) async throws -> Data {
+    /// Sessione che non aspetta il ritorno della rete: per le richieste che hanno gia' una copia salvata.
+    private static let quickSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForResource = 60
+        return URLSession(configuration: config)
+    }()
+
+    static func looksValid(_ data: Data) -> Bool {
+        guard data.count > 2 else { return false }
+        let head = String(decoding: data.prefix(64), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if head == "[]" || head == "{}" { return false }
+        return head.hasPrefix("[") || head.hasPrefix("{") || head.hasPrefix("#") || head.hasPrefix("<")
+            || data.prefix(2) == Data([0x1f, 0x8b])
+    }
+
+    private static func fetch(_ url: URL, timeout: TimeInterval, progress: String? = nil,
+                              quick: Bool = false) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue("IPTVPOC/0.3", forHTTPHeaderField: "User-Agent")
@@ -83,8 +105,8 @@ enum IPTVService {
         var fetched: (Data, URLResponse)? = nil
         while fetched == nil {
             do {
-                if let progress { fetched = try await fetchWithProgress(request, label: progress) }
-                else { fetched = try await session.data(for: request) }
+                if let progress, !quick { fetched = try await fetchWithProgress(request, label: progress) }
+                else { fetched = try await (quick ? quickSession : session).data(for: request) }
             } catch let error as URLError where attempt < 2 && [.notConnectedToInternet, .networkConnectionLost,
                                                                 .cannotConnectToHost].contains(error.code) {
                 attempt += 1

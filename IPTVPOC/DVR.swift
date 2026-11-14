@@ -183,10 +183,14 @@ final class DVRManager: ObservableObject {
             let name = channel.name
             status = "Registrazione dal buffer di \(name)…"
             let task = Task.detached(priority: .utility) { () -> (Int64, String) in
-                recorder.run(buffer: buffer, from: startOffset, to: output, limit: limit) { written in
+                recorder.run(buffer: buffer, from: startOffset, to: output, limit: limit, progress: { written in
                     let size = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
                     Task { @MainActor in DVRManager.shared.status = "Registrazione \(name) · \(size)" }
-                }
+                }, stalled: { seconds in
+                    Task { @MainActor in
+                        DVRManager.shared.status = "Registrazione \(name): nessun dato dal provider da \(seconds) s"
+                    }
+                })
             }
             let started = startedAt
             job = Task { [weak self] in
@@ -247,12 +251,16 @@ final class DVRManager: ObservableObject {
         var buffer = Data()
         buffer.reserveCapacity(262_144)
         var lastReport = Date()
-        func flush() {
-            guard !buffer.isEmpty else { return }
-            try? handle.write(contentsOf: buffer)
+        var writeFailed = false
+        /// Scrittura su disco: se fallisce (spazio esaurito) la registrazione si ferma e lo dice.
+        func flush() -> Bool {
+            guard !buffer.isEmpty else { return true }
+            do { try handle.write(contentsOf: buffer) } catch { writeFailed = true; return false }
             written += Int64(buffer.count)
             buffer.removeAll(keepingCapacity: true)
+            return true
         }
+        let diskFull = "Spazio sul telefono esaurito: registrazione salvata fin qui."
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = 30
@@ -263,7 +271,7 @@ final class DVRManager: ObservableObject {
             for try await byte in bytes {
                 buffer.append(byte)
                 if buffer.count >= 262_144 {
-                    flush()
+                    guard flush() else { return (written, diskFull) }
                     if written >= limit { return (written, "Limite di spazio raggiunto: registrazione salvata.") }
                     if Date().timeIntervalSince(lastReport) > 1 {
                         lastReport = Date()
@@ -272,10 +280,10 @@ final class DVRManager: ObservableObject {
                     }
                 }
             }
-            flush()
+            guard flush() else { return (written, diskFull) }
             return (written, "Flusso terminato dal server: registrazione salvata.")
         } catch {
-            flush()
+            if !flush() || writeFailed { return (written, diskFull) }
             if Task.isCancelled { return (written, "Registrazione interrotta e salvata.") }
             return (written, written > 0 ? "Connessione persa: registrazione salvata." : "Registrazione non riuscita: flusso non disponibile.")
         }

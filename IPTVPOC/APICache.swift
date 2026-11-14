@@ -61,8 +61,22 @@ enum APICache {
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: refreshKey + "." + group)
     }
 
+    /// Gruppo scelto da chi fa la richiesta (es. la guida XMLTV di una playlist M3U, che dall'indirizzo
+    /// non si riconosce): ha la precedenza su quello ricavato dall'URL.
+    private static var explicitGroups: [String: String] = [:]
+    private static let groupsLock = NSLock()
+
+    static func setGroup(_ group: String, for url: URL) {
+        groupsLock.lock(); explicitGroups[url.absoluteString] = group; groupsLock.unlock()
+    }
+
+    private static func resolvedGroup(_ url: URL) -> String {
+        groupsLock.lock(); defer { groupsLock.unlock() }
+        return explicitGroups[url.absoluteString] ?? group(for: url)
+    }
+
     private static func refreshedAt(_ url: URL) -> Date {
-        let value = UserDefaults.standard.double(forKey: refreshKey + "." + group(for: url))
+        let value = UserDefaults.standard.double(forKey: refreshKey + "." + resolvedGroup(url))
         let groupDate = value > 0 ? Date(timeIntervalSince1970: value) : .distantPast
         return max(refreshedAt, groupDate)
     }

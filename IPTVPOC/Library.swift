@@ -255,7 +255,12 @@ final class NowNextStore: ObservableObject {
         }
     }
 
-    func has(_ channelID: String) -> Bool { items[channelID] != nil || pending[channelID] != nil }
+    /// C'e' gia' una guida valida: almeno un programma salvato non e' ancora finito (altrimenti va riscaricata).
+    func has(_ channelID: String) -> Bool {
+        if pending[channelID] != nil { return true }
+        guard let list = items[channelID] else { return false }
+        return list.contains { $0.end > Date() }
+    }
 
     func clear() {
         items = [:]

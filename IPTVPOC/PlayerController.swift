@@ -757,6 +757,8 @@ final class PlayerController: ObservableObject {
     }
 
     func skip(_ delta: Double) {
+        // In diretta senza timeshift non c'e' un "avanti": si e' gia' al presente.
+        if isLive && !tsActive && catchupProgram == nil && delta > 0 { return }
         if tsActive {
             seekTimeshift(to: tsPosition.addingTimeInterval(delta))
         } else if catchupProgram != nil {

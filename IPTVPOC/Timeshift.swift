@@ -520,6 +520,16 @@ final class TimeshiftDownloader: NSObject, URLSessionDataDelegate, @unchecked Se
         session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
     }
 
+    /// Ferma subito il download in corso (attende la coda): dopo il ritorno nessun blocco del flusso
+    /// precedente finisce nel buffer. Usato al cambio canale, prima di segnare il nuovo segmento.
+    func stopNow() {
+        queue.addOperations([BlockOperation {
+            self.task?.cancel()
+            self.task = nil
+            self.currentURL = nil
+        }], waitUntilFinished: true)
+    }
+
     func start(_ url: URL) {
         queue.addOperation {
             self.wanted = true
@@ -967,7 +977,10 @@ final class BufferRecorder: @unchecked Sendable {
     private var state: (Bool, Int64) { lock.lock(); defer { lock.unlock() }; return (stopRequested, stopAt) }
 
     func run(buffer: TimeshiftBuffer, from start: Int64, to output: URL, limit: Int64,
-             progress: @escaping @Sendable (Int64) -> Void) -> (Int64, String) {
+             progress: @escaping @Sendable (Int64) -> Void,
+             stalled: @escaping @Sendable (Int) -> Void = { _ in }) -> (Int64, String) {
+        var lastData = Date()
+        var lastStallReport = 0
         guard FileManager.default.createFile(atPath: output.path, contents: nil),
               let writer = try? FileHandle(forWritingTo: output) else {
             return (0, "Impossibile creare il file della registrazione.")
@@ -985,8 +998,16 @@ final class BufferRecorder: @unchecked Sendable {
             let maxBytes = stopping ? Int(max(0, min(262_144, stopAt - offset))) : 262_144
             if maxBytes == 0 { return (written, "Registrazione salvata.") }
             let chunk = buffer.read(offset: offset, max: maxBytes, timeout: 1)
-            if chunk.data.isEmpty { offset = chunk.next; continue }
-            do { try writer.write(contentsOf: chunk.data) } catch { return (written, "Errore di scrittura: spazio esaurito?") }
+            if chunk.data.isEmpty {
+                offset = chunk.next
+                // Nessun dato dal provider: lo si segnala ogni 30 s invece di registrare 0 byte in silenzio.
+                let idle = Int(Date().timeIntervalSince(lastData))
+                if idle >= 30 && idle / 30 > lastStallReport { lastStallReport = idle / 30; stalled(idle) }
+                continue
+            }
+            lastData = Date()
+            lastStallReport = 0
+            do { try writer.write(contentsOf: chunk.data) } catch { return (written, "Spazio sul telefono esaurito: registrazione salvata fin qui.") }
             written += Int64(chunk.data.count)
             offset = chunk.next
             if written >= limit { return (written, "Limite di spazio raggiunto: registrazione salvata.") }
@@ -1055,6 +1076,8 @@ final class TimeshiftManager: ObservableObject {
         let liveStart = buffer.end
         if channelID != channel.id {
             onChannelChange?()
+            // Prima si chiude il flusso del canale precedente, poi si segna l'inizio del nuovo.
+            downloader.stopNow()
             buffer.markSegment(channel.name)
             channelID = channel.id
             channelName = channel.name

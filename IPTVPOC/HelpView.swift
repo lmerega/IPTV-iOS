@@ -19,7 +19,7 @@ struct HelpView: View {
             Entry(title: "Avanzamento e data della lista",
                   text: "Durante il caricamento una striscia in alto mostra la fase e le barre dei download (canali, film, serie) con i MB ricevuti. Sotto il titolo compare da quanto tempo la lista non viene aggiornata; oltre una settimana l'avviso diventa arancione."),
             Entry(title: "Aggiornare i contenuti",
-                  text: "Canali, categorie, film e serie vengono salvati sul telefono, cosi' l'app si apre subito. Quando il provider aggiunge contenuti premi ↻ in Live (canali e guida), Film o Serie (o trascina in basso la lista), oppure in Impostazioni → Contenuti aggiorna una parte alla volta (canali, guida, film, serie) o tutto insieme, con l'avanzamento del download. La guida programmi si aggiorna da sola ogni 3 ore."),
+                  text: "Canali, categorie, film e serie vengono salvati sul telefono, cosi' l'app si apre subito. Quando il provider aggiunge contenuti premi ↻ in Live (canali e guida), Film o Serie (o trascina in basso la lista), oppure in Impostazioni → Contenuti aggiorna una parte alla volta (canali, guida, film, serie) o tutto insieme, con l'avanzamento del download. La guida \"ora in onda\" si rinnova da sola quando i programmi salvati finiscono."),
             Entry(title: "Hai solo un link M3U?",
                   text: "Scegli \"Playlist M3U\" e incolla il link. Se il link contiene get.php con utente e password compare il pulsante \"Converti in sorgente Xtream\": usalo, cosi' avrai anche guida e replay.")
         ]),
