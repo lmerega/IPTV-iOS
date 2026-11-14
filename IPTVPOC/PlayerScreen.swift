@@ -354,20 +354,38 @@ struct PlayerScreen: View {
         Task { programs = await model.guide(for: channel) }
     }
 
-    /// Canali tra cui scegliere nel player: l'elenco da cui si e' partiti, altrimenti tutti quelli visibili.
-    /// Con elenchi molto lunghi (es. "Tutti") si mostra la categoria del canale in visione.
-    private func channelChoices() -> [IPTVChannel] {
-        let list = model.zapList.compactMap { model.channelByID[$0] }
-        let all = list.isEmpty ? model.visibleChannels : list
-        guard all.count > ChannelPanel.maxRows, let current = active.channel else { return all }
-        let group = all.filter { $0.group == current.group }
-        return group.isEmpty ? Array(all.prefix(ChannelPanel.maxRows)) : group
+    /// Elenchi tra cui scegliere nel pannello canali: quello da cui si e' partiti (se non troppo lungo),
+    /// Preferiti, Recenti e le categorie. Una sola categoria alla volta: l'elenco resta leggero.
+    private func channelSections() -> [String] {
+        var sections: [String] = []
+        let started = model.zapList.count
+        if started > 0 && started <= ChannelPanel.maxRows { sections.append(ChannelPanel.startedFrom) }
+        if !model.favoriteOrder.isEmpty { sections.append(ChannelPanel.favorites) }
+        if !model.recents.isEmpty { sections.append(ChannelPanel.recent) }
+        return sections + model.liveGroups
+    }
+
+    private func channels(in section: String) -> [IPTVChannel] {
+        switch section {
+        case ChannelPanel.startedFrom: return model.zapList.compactMap { model.channelByID[$0] }
+        case ChannelPanel.favorites: return model.orderedFavorites
+        case ChannelPanel.recent: return model.recentChannels
+        default: return model.visibleChannels.filter { $0.group == section }
+        }
+    }
+
+    /// Elenco mostrato all'apertura: quello di partenza se breve, altrimenti la categoria del canale in visione.
+    private func initialSection() -> String {
+        let started = model.zapList.count
+        if started > 0 && started <= ChannelPanel.maxRows { return ChannelPanel.startedFrom }
+        return active.channel?.group ?? model.liveGroups.first ?? ""
     }
 
     private var channelPanel: some View {
         // .equatable(): il pannello non si ridisegna a ogni aggiornamento del player (tempo, buffer...),
         // solo quando cambia il canale in visione.
-        ChannelPanel(current: active.channel?.id, choices: channelChoices) { channel in
+        ChannelPanel(current: active.channel?.id, sections: channelSections, initial: initialSection,
+                     load: channels(in:)) { channel in
             showChannels = false
             switchChannel(channel)
         }
@@ -922,34 +940,67 @@ struct AirPlayButton: UIViewRepresentable {
 /// Elenco dei canali dentro il player, con il programma in onda: tocca per cambiare canale senza uscire.
 struct ChannelPanel: View, Equatable {
     static let maxRows = 400
+    static let startedFrom = "Elenco di partenza"
+    static let favorites = "Preferiti"
+    static let recent = "Recenti"
     let current: String?
-    /// Letto una volta all'apertura: l'elenco non cambia mentre il pannello e' aperto.
-    let choices: () -> [IPTVChannel]
+    /// Letti all'apertura e al cambio di categoria, non a ogni aggiornamento del player.
+    let sections: () -> [String]
+    let initial: () -> String
+    let load: (String) -> [IPTVChannel]
     let onSelect: (IPTVChannel) -> Void
+    @State private var section = ""
+    @State private var sectionList: [String] = []
     @State private var channels: [IPTVChannel] = []
 
     static func == (lhs: ChannelPanel, rhs: ChannelPanel) -> Bool { lhs.current == rhs.current }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            List(channels) { channel in
-                Button { onSelect(channel) } label: { ChannelRow(channel: channel) }
-                    .listRowBackground(channel.id == current ? Color.accentColor.opacity(0.18) : Color.clear)
-                    .id(channel.id)
+        VStack(spacing: 0) {
+            Menu {
+                Picker("Categoria", selection: Binding(get: { section }, set: { choose($0) })) {
+                    ForEach(sectionList, id: \.self) { Text($0).tag($0) }
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text(section.isEmpty ? "Categoria" : section).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption)
+                    Spacer()
+                    Text("\(channels.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal).padding(.vertical, 10)
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .overlay { if channels.isEmpty { ProgressView() } }
-            .task {
-                guard channels.isEmpty else { return }
-                channels = choices()
-                // Il salto al canale in visione dopo che l'elenco e' stato disegnato (subito, dentro
-                // onAppear, con elenchi lunghi poteva bloccare l'interfaccia).
-                try? await Task.sleep(nanoseconds: 150_000_000)
-                if let current, channels.contains(where: { $0.id == current }) {
-                    proxy.scrollTo(current, anchor: .center)
+            .accessibilityLabel("Categoria: \(section)")
+            Divider()
+            ScrollViewReader { proxy in
+                List(channels) { channel in
+                    Button { onSelect(channel) } label: { ChannelRow(channel: channel) }
+                        .listRowBackground(channel.id == current ? Color.accentColor.opacity(0.18) : Color.clear)
+                        .id(channel.id)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .overlay { if channels.isEmpty && section.isEmpty { ProgressView() } }
+                .task {
+                    guard section.isEmpty else { return }
+                    sectionList = sections()
+                    choose(initial())
+                    // Salto al canale in visione dopo che l'elenco e' stato disegnato (subito, con elenchi
+                    // lunghi, poteva bloccare l'interfaccia).
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    if let current, channels.contains(where: { $0.id == current }) {
+                        proxy.scrollTo(current, anchor: .center)
+                    }
                 }
             }
         }
+    }
+
+    private func choose(_ name: String) {
+        section = name
+        let list = load(name)
+        // Una categoria enorme si mostra comunque a pezzi: le prime righe bastano per scegliere.
+        channels = list.count > Self.maxRows * 5 ? Array(list.prefix(Self.maxRows * 5)) : list
     }
 }
